@@ -29,6 +29,8 @@ pub enum Tool {
     #[default]
     Pen,
     Eraser,
+    Fill,
+    Spray,
     Select,
     Text,
     Line,
@@ -60,6 +62,13 @@ pub enum ShapeKind {
     Heart,
     Triangle,
     Diamond,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Spray {
+    pub points: Vec<Point>,
+    pub color: Color,
+    pub radius: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -139,14 +148,24 @@ impl CanvasTable {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Note {
     pub name: String,
+    pub bg_color: Option<Color>,
     pub strokes: Vec<Stroke>,
     pub shapes: Vec<Shape>,
     pub images: Vec<CanvasImage>,
     pub tables: Vec<CanvasTable>,
     pub texts: Vec<CanvasText>,
+    pub sprays: Vec<Spray>,
     /// Undo stack — not persisted.
     #[serde(skip)]
-    pub undo_stack: Vec<(Vec<Stroke>, Vec<Shape>, Vec<CanvasImage>, Vec<CanvasTable>, Vec<CanvasText>)>,
+    pub undo_stack: Vec<(
+        Option<Color>,
+        Vec<Stroke>,
+        Vec<Shape>,
+        Vec<CanvasImage>,
+        Vec<CanvasTable>,
+        Vec<CanvasText>,
+        Vec<Spray>
+    )>,
 }
 
 impl Note {
@@ -156,22 +175,26 @@ impl Note {
 
     pub fn push_undo(&mut self) {
         self.undo_stack.push((
+            self.bg_color.clone(),
             self.strokes.clone(),
             self.shapes.clone(),
             self.images.clone(),
             self.tables.clone(),
             self.texts.clone(),
+            self.sprays.clone(),
         ));
         if self.undo_stack.len() > 50 { self.undo_stack.remove(0); }
     }
 
     pub fn undo(&mut self) {
-        if let Some((s, sh, im, tb, tx)) = self.undo_stack.pop() {
+        if let Some((bg, s, sh, im, tb, tx, sp)) = self.undo_stack.pop() {
+            self.bg_color = bg;
             self.strokes = s;
             self.shapes = sh;
             self.images = im;
             self.tables = tb;
             self.texts = tx;
+            self.sprays = sp;
         }
     }
 }

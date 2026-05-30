@@ -1,5 +1,5 @@
 use cairo::Context;
-use crate::state::{CanvasImage, Color, Point, Shape, ShapeKind, Stroke};
+use crate::state::{CanvasImage, Color, Point, Shape, ShapeKind, Stroke, Spray};
 
 pub fn apply_color(cr: &Context, c: &Color) {
     cr.set_source_rgba(c.r, c.g, c.b, c.a);
@@ -164,6 +164,18 @@ pub fn draw_shape(cr: &Context, shape: &Shape) {
     }
 }
 
+// ── Spray rendering ─────────────────────────────────────────────────────────────
+
+pub fn draw_spray(cr: &Context, spray: &Spray) {
+    apply_color(cr, &spray.color);
+    cr.set_antialias(cairo::Antialias::None); // For performance with many particles
+    for p in &spray.points {
+        cr.rectangle(p.x, p.y, 1.5, 1.5);
+    }
+    cr.fill().unwrap();
+    cr.set_antialias(cairo::Antialias::Best);
+}
+
 // ── Pasted image rendering ────────────────────────────────────────────────────
 
 pub fn draw_canvas_image(cr: &Context, img: &CanvasImage) {
@@ -202,30 +214,4 @@ pub fn draw_canvas_text(cr: &Context, txt: &crate::state::CanvasText) {
     cr.restore().unwrap();
 }
 
-// ── Custom cursor ─────────────────────────────────────────────────────────────
-
-pub fn draw_cursor(cr: &Context, cx: f64, cy: f64, drawing: bool) {
-    let radius = if drawing { 5.0 } else { 9.0 };
-    cr.set_antialias(cairo::Antialias::Best);
-    cr.set_source_rgba(0.18, 0.42, 0.95, 0.85);
-    cr.set_line_width(1.5);
-    cr.arc(cx, cy, radius, 0.0, std::f64::consts::TAU);
-    cr.stroke().unwrap();
-    cr.set_source_rgba(0.18, 0.42, 0.95, 1.0);
-    cr.arc(cx, cy, 1.8, 0.0, std::f64::consts::TAU);
-    cr.fill().unwrap();
-    cr.set_source_rgba(0.18, 0.42, 0.95, 0.45);
-    cr.set_line_width(1.0);
-    let gap = radius + 3.5;
-    let arm = 5.0;
-    for (ax, ay, bx, by) in [
-        (cx - gap - arm, cy, cx - gap, cy),
-        (cx + gap, cy, cx + gap + arm, cy),
-        (cx, cy - gap - arm, cx, cy - gap),
-        (cx, cy + gap, cx, cy + gap + arm),
-    ] {
-        cr.move_to(ax, ay);
-        cr.line_to(bx, by);
-        cr.stroke().unwrap();
-    }
-}
+// Custom cursor removed for native performance

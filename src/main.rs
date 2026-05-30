@@ -5,17 +5,17 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, ColorButton,
-    DrawingArea, EventControllerKey, EventControllerMotion, GestureDrag,
+    DrawingArea, EventControllerKey, GestureDrag,
     Label, MenuButton, Orientation, Paned, Popover, Scale,
-    ScrolledWindow, Separator, ToggleButton, CssProvider,
+    ScrolledWindow, Separator, ToggleButton, CssProvider, HeaderBar,
 };
 use gtk::gdk::RGBA;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::HashSet;
 
-use state::{AppState, Color, Shape, ShapeKind, Stroke, Point, Tool, CanvasImage, CanvasTable, CanvasText};
-use canvas::{draw_stroke, draw_shape, draw_canvas_image, draw_canvas_text, draw_cursor};
+use state::{AppState, Color, Shape, ShapeKind, Stroke, Point, Tool, CanvasImage, CanvasTable, CanvasText, Spray};
+use canvas::{draw_stroke, draw_shape, draw_canvas_image, draw_canvas_text, draw_spray};
 
 /// Load the elegant light theme CSS into the GTK display.
 fn apply_css() {
@@ -45,10 +45,10 @@ fn apply_css() {
     }
     .toolbar button:active,
     .toolbar button:checked {
-        background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
         color: white;
         border-color: transparent;
-        box-shadow: 0 2px 6px rgba(99, 102, 241, 0.4);
+        box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
     }
     .sidebar {
         background: rgba(255, 255, 255, 0.6);
@@ -116,10 +116,10 @@ fn apply_css() {
 
 #[derive(Default)]
 struct DrawState {
-    cursor: Option<(f64, f64)>,
     drawing: bool,
     drag_start: Option<(f64, f64)>,
     current_stroke: Option<Stroke>,
+    current_spray: Option<Spray>,
     preview_shape: Option<Shape>,
 
     // Selection state
@@ -145,8 +145,12 @@ type SharedApp = Rc<RefCell<AppState>>;
 type SharedDraw = Rc<RefCell<DrawState>>;
 
 fn main() {
-    // Suppress harmless Vulkan swapchain warnings from GDK (safe in single-threaded init)
-    unsafe { std::env::set_var("GSK_RENDERER", "cairo"); }
+    // We use the cairo renderer because GTK4's hardware acceleration (NGL/Vulkan) 
+    // introduces massive texture-upload latency for full-screen Cairo DrawingAreas.
+    unsafe {
+        std::env::set_var("GSK_RENDERER", "cairo");
+    }
+    
     let app = Application::builder()
         .application_id("org.simplepaint.SimplePaint")
         .build();
@@ -166,10 +170,21 @@ fn build_ui(app: &Application) {
     let draw_state: SharedDraw = Rc::new(RefCell::new(DrawState::default()));
 
     let root = GtkBox::new(Orientation::Vertical, 0);
+    
+    // Professional HeaderBar
+    let header = HeaderBar::new();
+    header.set_show_title_buttons(true);
+    let title_lbl = Label::new(Some("✏️ SimplePaint"));
+    title_lbl.add_css_class("title");
+    title_lbl.set_margin_start(12);
+    title_lbl.set_margin_end(12);
+    header.set_title_widget(Some(&title_lbl));
+    window.set_titlebar(Some(&header));
+
     let da = DrawingArea::new();
     da.set_hexpand(true);
     da.set_vexpand(true);
-    da.set_cursor_from_name(Some("none"));
+    da.set_cursor_from_name(Some("crosshair"));
 
     let sidebar_list = GtkBox::new(Orientation::Vertical, 2);
     sidebar_list.set_margin_top(6);
@@ -341,8 +356,12 @@ fn build_toolbar(
     select_btn.set_tooltip_text(Some("Select, move, and delete items"));
     {
         let as_ = app_state.clone();
+        let da_ = da.clone();
         select_btn.connect_toggled(move |b| {
-            if b.is_active() { as_.borrow_mut().current_tool = Tool::Select; }
+            if b.is_active() { 
+                as_.borrow_mut().current_tool = Tool::Select; 
+                da_.set_cursor_from_name(Some("default"));
+            }
         });
     }
     bar.append(&select_btn);
@@ -358,11 +377,30 @@ fn build_toolbar(
             if b.is_active() { 
                 as_.borrow_mut().current_tool = Tool::Text;
                 ds_.borrow_mut().selection_rect = None;
+                da_.set_cursor_from_name(Some("text"));
                 da_.queue_draw();
             }
         });
     }
     bar.append(&text_btn);
+
+    let fill_btn = ToggleButton::builder().label("🪣 Fill").build();
+    fill_btn.set_tooltip_text(Some("Fill Canvas Background"));
+    fill_btn.set_group(Some(&select_btn));
+    {
+        let as_ = app_state.clone();
+        let ds_ = draw_state.clone();
+        let da_ = da.clone();
+        fill_btn.connect_toggled(move |b| {
+            if b.is_active() { 
+                as_.borrow_mut().current_tool = Tool::Fill;
+                ds_.borrow_mut().selection_rect = None;
+                da_.set_cursor_from_name(Some("cell"));
+                da_.queue_draw();
+            }
+        });
+    }
+    bar.append(&fill_btn);
 
     // ── Pen + Eraser toggle buttons ──
     let pen_btn = ToggleButton::builder().label("✏️ Pen").build();
@@ -377,6 +415,7 @@ fn build_toolbar(
             if b.is_active() { 
                 as_.borrow_mut().current_tool = Tool::Pen; 
                 ds_.borrow_mut().selection_rect = None;
+                da_.set_cursor_from_name(Some("crosshair"));
                 da_.queue_draw();
             }
         });
@@ -394,11 +433,30 @@ fn build_toolbar(
             if b.is_active() { 
                 as_.borrow_mut().current_tool = Tool::Eraser; 
                 ds_.borrow_mut().selection_rect = None;
+                da_.set_cursor_from_name(Some("crosshair"));
                 da_.queue_draw();
             }
         });
     }
     bar.append(&eraser_btn);
+
+    let spray_btn = ToggleButton::builder().label("💨 Spray").build();
+    spray_btn.set_tooltip_text(Some("Spray Can Tool"));
+    spray_btn.set_group(Some(&pen_btn));
+    {
+        let as_ = app_state.clone();
+        let ds_ = draw_state.clone();
+        let da_ = da.clone();
+        spray_btn.connect_toggled(move |b| {
+            if b.is_active() { 
+                as_.borrow_mut().current_tool = Tool::Spray; 
+                ds_.borrow_mut().selection_rect = None;
+                da_.set_cursor_from_name(Some("crosshair"));
+                da_.queue_draw();
+            }
+        });
+    }
+    bar.append(&spray_btn);
 
     bar.append(&Separator::new(Orientation::Vertical));
 
@@ -442,6 +500,7 @@ fn build_toolbar(
                 if b.is_active() { 
                     as_.borrow_mut().current_tool = tc.clone(); 
                     ds_.borrow_mut().selection_rect = None;
+                    da_.set_cursor_from_name(Some("crosshair"));
                     da_.queue_draw();
                     pop_.popdown();
                 }
@@ -794,9 +853,15 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
             cr.scale(zoom, zoom);
             
             let note = app.current_note();
+            if let Some(bg) = &note.bg_color {
+                cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
+                cr.paint().unwrap();
+            }
+            
             for img in &note.images { draw_canvas_image(cr, img); }
             for txt in &note.texts { draw_canvas_text(cr, txt); }
             for s in &note.strokes { draw_stroke(cr, s); }
+            for sp in &note.sprays { draw_spray(cr, sp); }
             for sh in &note.shapes { draw_shape(cr, sh); }
             
             let is_select = app.current_tool == Tool::Select;
@@ -804,6 +869,7 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
             
             let d = ds.borrow();
             if let Some(ref s) = d.current_stroke { draw_stroke(cr, s); }
+            if let Some(ref sp) = d.current_spray { draw_spray(cr, sp); }
             if let Some(ref sh) = d.preview_shape { draw_shape(cr, sh); }
             
             // Draw selection box only if the tool is Select
@@ -821,25 +887,10 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                     cr.fill().unwrap();
                 }
             }
-
-            if let Some((cx, cy)) = d.cursor { draw_cursor(cr, cx, cy, d.drawing); }
         }
     });
 
-    // Motion
-    let motion = EventControllerMotion::new();
-    motion.connect_motion({
-        let (ds, da, as_) = (draw_state.clone(), da.clone(), app_state.clone());
-        move |_, x, y| {
-            let z = as_.borrow().zoom_level;
-            ds.borrow_mut().cursor = Some((x / z, y / z));
-            da.queue_draw();
-        }
-    });
-    motion.connect_leave({
-        let (ds, da) = (draw_state.clone(), da.clone());
-        move |_| { ds.borrow_mut().cursor = None; da.queue_draw(); }
-    });
+    // We removed EventControllerMotion for custom cursor to fix latency
 
     // Drag
     let drag = GestureDrag::new();
@@ -859,6 +910,11 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                 d.current_stroke = Some(Stroke {
                     points: vec![Point { x: sx, y: sy }],
                     color, width,
+                });
+            } else if tool == Tool::Spray {
+                d.current_spray = Some(Spray {
+                    points: vec![],
+                    color, radius: width * 3.0,
                 });
             } else if tool == Tool::Select {
                 let mut clicked_inside = false;
@@ -919,19 +975,40 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
             let (tool, color, width) = (app.current_tool.clone(), app.current_color.clone(), app.line_width);
             drop(app);
 
-            let mut d = ds.borrow_mut();
-            d.cursor = Some((ex, ey));
+            // Removed manual cursor tracking for performance
+            // let mut d = ds.borrow_mut();
+            // d.cursor = Some((ex, ey));
 
+            let mut d = ds.borrow_mut();
             match tool {
                 Tool::Pen => {
                     if let Some(ref mut stroke) = d.current_stroke {
                         if let Some(last) = stroke.points.last() {
                             let dx = ex - last.x;
                             let dy = ey - last.y;
-                            // Only add if moved ≥ 4px — prevents over-dense points
-                            if dx * dx + dy * dy > 16.0 {
+                            // Only add if moved ≥ 1px — captures more input for lower latency feel
+                            if dx * dx + dy * dy > 1.0 {
                                 stroke.points.push(Point { x: ex, y: ey });
                             }
+                        }
+                    }
+                }
+                Tool::Spray => {
+                    if let Some(ref mut spray) = d.current_spray {
+                        let r = spray.radius;
+                        // Use time-based pseudo random for burst
+                        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos();
+                        let mut seed = nanos;
+                        let mut next_f64 = || -> f64 {
+                            seed ^= seed << 13;
+                            seed ^= seed >> 17;
+                            seed ^= seed << 5;
+                            (seed % 1000) as f64 / 1000.0
+                        };
+                        for _ in 0..15 {
+                            let a = next_f64() * std::f64::consts::TAU;
+                            let dist = next_f64().sqrt() * r;
+                            spray.points.push(Point { x: ex + a.cos() * dist, y: ey + a.sin() * dist });
                         }
                     }
                 }
@@ -1026,6 +1103,7 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
             let mut d = ds.borrow_mut();
             d.drawing = false;
             let stroke = d.current_stroke.take();
+            let spray = d.current_spray.take();
             let shape  = d.preview_shape.take();
 
             let mut app = as_.borrow_mut();
@@ -1127,6 +1205,7 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
             if tool != Tool::Select {
                 note.push_undo();
                 if let Some(s) = stroke { if !s.points.is_empty() { note.strokes.push(s); } }
+                if let Some(sp) = spray { if !sp.points.is_empty() { note.sprays.push(sp); } }
                 if let Some(sh) = shape { note.shapes.push(sh); }
             }
             drop(app);
@@ -1147,7 +1226,15 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
             let tool = app.current_tool.clone();
             drop(app);
             
-            if tool == Tool::Text {
+            if tool == Tool::Fill {
+                let mut app = as_.borrow_mut();
+                let color = app.current_color.clone();
+                let note = app.current_note_mut();
+                note.push_undo();
+                note.bg_color = Some(color);
+                da_.queue_draw();
+                return;
+            } else if tool == Tool::Text {
                 // Spawn a Popover with a text entry
                 let pop = gtk::Popover::new();
                 pop.set_parent(&da_);
@@ -1220,7 +1307,6 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
         }
     });
 
-    da.add_controller(motion);
     da.add_controller(drag);
     da.add_controller(click);
 }
