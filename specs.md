@@ -1,7 +1,7 @@
-# SimplePaint - Linux Drawing & Note-taking Application Specification
+# roughnote - Linux Drawing & Note-taking Application Specification
 
 ## Overview
-SimplePaint is a native Linux application built with Rust designed for drawing, handwriting, and comprehensive note-taking. It aims to provide a robust feature set comparable to Microsoft OneNote, tailored specifically for the Linux ecosystem.
+roughnote is a native Linux application built with Rust designed for drawing, handwriting, and comprehensive note-taking. It aims to provide a robust feature set comparable to Microsoft OneNote, tailored specifically for the Linux ecosystem.
 
 ## Core Technology Stack
 - **Language:** Rust

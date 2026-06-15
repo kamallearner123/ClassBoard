@@ -41,6 +41,11 @@ pub enum Tool {
     Heart,
     Triangle,
     Diamond,
+    Cloud,
+    Database,
+    Actor,
+    UmlClass,
+    RoundedRect,
 }
 
 // ── Drawing elements ──────────────────────────────────────────────────────────
@@ -62,6 +67,11 @@ pub enum ShapeKind {
     Heart,
     Triangle,
     Diamond,
+    Cloud,
+    Database,
+    Actor,
+    UmlClass,
+    RoundedRect,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -234,6 +244,7 @@ pub struct AppState {
     pub zoom_level: f64,
     pub canvas_width: f64,
     pub canvas_height: f64,
+    pub clipboard_note: Note,
 }
 
 impl Default for AppState {
@@ -247,6 +258,7 @@ impl Default for AppState {
             zoom_level: 1.0,
             canvas_width: 1600.0,
             canvas_height: 1200.0,
+            clipboard_note: Note::default(),
         }
     }
 }

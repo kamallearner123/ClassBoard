@@ -160,7 +160,112 @@ pub fn draw_shape(cr: &Context, shape: &Shape) {
             cr.close_path();
             cr.stroke().unwrap();
         }
-
+        ShapeKind::RoundedRect => {
+            let rx = x1.min(x2);
+            let ry = y1.min(y2);
+            let w = (x2 - x1).abs();
+            let h = (y2 - y1).abs();
+            let r = 10.0_f64.min(w / 2.0).min(h / 2.0); // radius
+            cr.new_sub_path();
+            cr.arc(rx + w - r, ry + r, r, -std::f64::consts::PI / 2.0, 0.0);
+            cr.arc(rx + w - r, ry + h - r, r, 0.0, std::f64::consts::PI / 2.0);
+            cr.arc(rx + r, ry + h - r, r, std::f64::consts::PI / 2.0, std::f64::consts::PI);
+            cr.arc(rx + r, ry + r, r, std::f64::consts::PI, 3.0 * std::f64::consts::PI / 2.0);
+            cr.close_path();
+            cr.stroke().unwrap();
+        }
+        ShapeKind::UmlClass => {
+            let rx = x1.min(x2);
+            let ry = y1.min(y2);
+            let w = (x2 - x1).abs();
+            let h = (y2 - y1).abs();
+            cr.rectangle(rx, ry, w, h);
+            cr.move_to(rx, ry + 30.0_f64.min(h / 2.0));
+            cr.line_to(rx + w, ry + 30.0_f64.min(h / 2.0));
+            cr.stroke().unwrap();
+        }
+        ShapeKind::Actor => {
+            let cx = (x1 + x2) / 2.0;
+            let top = y1.min(y2);
+            let bot = y1.max(y2);
+            let w = (x2 - x1).abs();
+            let h = bot - top;
+            let head_r = (w * 0.2).min(h * 0.15);
+            
+            // Head
+            cr.arc(cx, top + head_r, head_r, 0.0, std::f64::consts::TAU);
+            cr.stroke().unwrap();
+            
+            // Body
+            cr.move_to(cx, top + head_r * 2.0);
+            cr.line_to(cx, top + h * 0.6);
+            
+            // Arms
+            cr.move_to(cx - w * 0.4, top + h * 0.35);
+            cr.line_to(cx + w * 0.4, top + h * 0.35);
+            
+            // Legs
+            cr.move_to(cx, top + h * 0.6);
+            cr.line_to(cx - w * 0.3, bot);
+            cr.move_to(cx, top + h * 0.6);
+            cr.line_to(cx + w * 0.3, bot);
+            
+            cr.stroke().unwrap();
+        }
+        ShapeKind::Database => {
+            let rx = x1.min(x2);
+            let ry = y1.min(y2);
+            let w = (x2 - x1).abs();
+            let h = (y2 - y1).abs();
+            let er = (h * 0.15).max(5.0); // ellipse y-radius
+            
+            cr.save().unwrap();
+            
+            // Top ellipse
+            cr.save().unwrap();
+            cr.translate(rx + w / 2.0, ry + er);
+            cr.scale(w / 2.0, er);
+            cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+            cr.restore().unwrap();
+            cr.stroke().unwrap();
+            
+            // Bottom half-ellipse
+            cr.save().unwrap();
+            cr.translate(rx + w / 2.0, ry + h - er);
+            cr.scale(w / 2.0, er);
+            cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::PI);
+            cr.restore().unwrap();
+            
+            // Sides
+            cr.move_to(rx, ry + er);
+            cr.line_to(rx, ry + h - er);
+            cr.move_to(rx + w, ry + er);
+            cr.line_to(rx + w, ry + h - er);
+            
+            cr.stroke().unwrap();
+            cr.restore().unwrap();
+        }
+        ShapeKind::Cloud => {
+            let rx = x1.min(x2);
+            let ry = y1.min(y2);
+            let w = (x2 - x1).abs();
+            let h = (y2 - y1).abs();
+            
+            let cx = rx + w / 2.0;
+            let cy = ry + h / 2.0;
+            
+            // Draw a basic cloud using multiple overlapping circles
+            cr.arc(cx, cy + h * 0.1, h * 0.4, 0.0, std::f64::consts::TAU);
+            cr.arc(cx - w * 0.25, cy + h * 0.1, h * 0.3, 0.0, std::f64::consts::TAU);
+            cr.arc(cx + w * 0.25, cy + h * 0.1, h * 0.3, 0.0, std::f64::consts::TAU);
+            cr.arc(cx - w * 0.15, cy - h * 0.15, h * 0.35, 0.0, std::f64::consts::TAU);
+            cr.arc(cx + w * 0.15, cy - h * 0.15, h * 0.35, 0.0, std::f64::consts::TAU);
+            
+            // Use a clip and fill to just draw the outline, or just stroke them all.
+            // Since filling all circles with background color would erase things behind,
+            // we will just stroke the whole path.
+            cr.stroke().unwrap();
+        }
     }
 }
 

@@ -104,6 +104,15 @@ fn apply_css() {
     colorbutton button {
         border-radius: 6px;
     }
+    .tool-group {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 4px;
+        margin-left: 2px;
+        margin-right: 2px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
     "#;
     let provider = CssProvider::new();
     provider.load_from_data(css);
@@ -152,7 +161,7 @@ fn main() {
     }
     
     let app = Application::builder()
-        .application_id("org.simplepaint.SimplePaint")
+        .application_id("org.roughnote.roughnote")
         .build();
     app.connect_activate(build_ui);
     app.run();
@@ -161,7 +170,7 @@ fn main() {
 fn build_ui(app: &Application) {
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("SimplePaint")
+        .title("roughnote")
         .default_width(1440)
         .default_height(900)
         .build();
@@ -174,7 +183,7 @@ fn build_ui(app: &Application) {
     // Professional HeaderBar
     let header = HeaderBar::new();
     header.set_show_title_buttons(true);
-    let title_lbl = Label::new(Some("✏️ SimplePaint"));
+    let title_lbl = Label::new(Some("✏️ roughnote"));
     title_lbl.add_css_class("title");
     title_lbl.set_margin_start(12);
     title_lbl.set_margin_end(12);
@@ -289,16 +298,20 @@ fn build_toolbar(
     sidebar_list: &GtkBox,
     window: &ApplicationWindow,
 ) -> GtkBox {
-    let bar = GtkBox::new(Orientation::Horizontal, 4);
-    bar.set_margin_start(6);
-    bar.set_margin_end(6);
-    bar.set_margin_top(4);
-    bar.set_margin_bottom(4);
+    let bar = GtkBox::new(Orientation::Horizontal, 6);
+    bar.set_margin_start(8);
+    bar.set_margin_end(8);
+    bar.set_margin_top(6);
+    bar.set_margin_bottom(6);
+    bar.add_css_class("toolbar");
 
-    // New Session
+    // ── Group 1: File Operations ──
+    let file_group = GtkBox::new(Orientation::Horizontal, 2);
+    file_group.add_css_class("tool-group");
+
     let new_sess = Button::with_label("+ Session");
     {
-        let (as_, sl, da) = (app_state.clone(), sidebar_list.clone(), da.clone());
+        let (as_, sl, da_) = (app_state.clone(), sidebar_list.clone(), da.clone());
         let win = window.clone();
         new_sess.connect_clicked(move |_| {
             let idx = {
@@ -308,342 +321,386 @@ fn build_toolbar(
                 s.sessions.len() - 1
             };
             as_.borrow_mut().current_session_idx = idx;
-            rebuild_sidebar(&sl, &as_, &da, &win);
-            da.queue_draw();
+            rebuild_sidebar(&sl, &as_, &da_, &win);
+            da_.queue_draw();
         });
     }
-    bar.append(&new_sess);
+    file_group.append(&new_sess);
 
-    // Save (current session)
     let save_btn = Button::with_label("💾 Save");
     {
         let (as_, win) = (app_state.clone(), window.clone());
         save_btn.connect_clicked(move |_| {
-            let path = as_.borrow().sessions[as_.borrow().current_session_idx]
-                .save_path.clone();
+            let path = as_.borrow().sessions[as_.borrow().current_session_idx].save_path.clone();
             match path {
                 Some(p) => do_save_session(&as_, &p),
                 None => save_as_dialog(&as_, &win),
             }
         });
     }
-    bar.append(&save_btn);
+    file_group.append(&save_btn);
 
-    // Save As
     let save_as_btn = Button::with_label("Save As…");
     {
         let (as_, win) = (app_state.clone(), window.clone());
-        save_as_btn.connect_clicked(move |_| {
-            save_as_dialog(&as_, &win);
+        save_as_btn.connect_clicked(move |_| { save_as_dialog(&as_, &win); });
+    }
+    file_group.append(&save_as_btn);
+
+    let gdrive_btn = Button::with_label("☁️ GDrive");
+    gdrive_btn.set_tooltip_text(Some("Save to Google Drive"));
+    {
+        let win = window.clone();
+        gdrive_btn.connect_clicked(move |_| {
+            let dialog = gtk::MessageDialog::builder()
+                .transient_for(&win).modal(true).message_type(gtk::MessageType::Info).buttons(gtk::ButtonsType::Ok)
+                .text("Google Drive Integration")
+                .secondary_text("Placeholder for GDrive sync.").build();
+            dialog.connect_response(|d, _| d.close());
+            dialog.present();
         });
     }
-    bar.append(&save_as_btn);
+    file_group.append(&gdrive_btn);
 
-    // Open
     let open_btn = Button::with_label("📂 Open");
     {
-        let (as_, sl, da, win) = (app_state.clone(), sidebar_list.clone(), da.clone(), window.clone());
-        open_btn.connect_clicked(move |_| {
-            open_dialog(&as_, &sl, &da, &win);
-        });
+        let (as_, sl, da_, win) = (app_state.clone(), sidebar_list.clone(), da.clone(), window.clone());
+        open_btn.connect_clicked(move |_| { open_dialog(&as_, &sl, &da_, &win); });
     }
-    bar.append(&open_btn);
+    file_group.append(&open_btn);
+    bar.append(&file_group);
 
-    bar.append(&Separator::new(Orientation::Vertical));
+    // ── Group 2: Tools ──
+    let tools_group = GtkBox::new(Orientation::Horizontal, 2);
+    tools_group.add_css_class("tool-group");
 
-    // ── Select button ──
     let select_btn = ToggleButton::builder().label("⬚ Select").build();
     select_btn.set_tooltip_text(Some("Select, move, and delete items"));
     {
         let as_ = app_state.clone();
         let da_ = da.clone();
         select_btn.connect_toggled(move |b| {
-            if b.is_active() { 
-                as_.borrow_mut().current_tool = Tool::Select; 
-                da_.set_cursor_from_name(Some("default"));
-            }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Select; da_.set_cursor_from_name(Some("default")); }
         });
     }
-    bar.append(&select_btn);
+    tools_group.append(&select_btn);
 
     let text_btn = ToggleButton::builder().label("T Text").build();
-    text_btn.set_tooltip_text(Some("Insert text"));
     text_btn.set_group(Some(&select_btn));
     {
-        let as_ = app_state.clone();
-        let ds_ = draw_state.clone();
-        let da_ = da.clone();
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         text_btn.connect_toggled(move |b| {
-            if b.is_active() { 
-                as_.borrow_mut().current_tool = Tool::Text;
-                ds_.borrow_mut().selection_rect = None;
-                da_.set_cursor_from_name(Some("text"));
-                da_.queue_draw();
-            }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Text; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("text")); da_.queue_draw(); }
         });
     }
-    bar.append(&text_btn);
+    tools_group.append(&text_btn);
 
     let fill_btn = ToggleButton::builder().label("🪣 Fill").build();
-    fill_btn.set_tooltip_text(Some("Fill Canvas Background"));
     fill_btn.set_group(Some(&select_btn));
     {
-        let as_ = app_state.clone();
-        let ds_ = draw_state.clone();
-        let da_ = da.clone();
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         fill_btn.connect_toggled(move |b| {
-            if b.is_active() { 
-                as_.borrow_mut().current_tool = Tool::Fill;
-                ds_.borrow_mut().selection_rect = None;
-                da_.set_cursor_from_name(Some("cell"));
-                da_.queue_draw();
-            }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Fill; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("cell")); da_.queue_draw(); }
         });
     }
-    bar.append(&fill_btn);
+    tools_group.append(&fill_btn);
 
-    // ── Pen + Eraser toggle buttons ──
     let pen_btn = ToggleButton::builder().label("✏️ Pen").build();
-    pen_btn.set_tooltip_text(Some("Freehand pen"));
     pen_btn.set_group(Some(&select_btn));
     pen_btn.set_active(true);
     {
-        let as_ = app_state.clone();
-        let ds_ = draw_state.clone();
-        let da_ = da.clone();
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         pen_btn.connect_toggled(move |b| {
-            if b.is_active() { 
-                as_.borrow_mut().current_tool = Tool::Pen; 
-                ds_.borrow_mut().selection_rect = None;
-                da_.set_cursor_from_name(Some("crosshair"));
-                da_.queue_draw();
-            }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Pen; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("crosshair")); da_.queue_draw(); }
         });
     }
-    bar.append(&pen_btn);
+    tools_group.append(&pen_btn);
 
     let eraser_btn = ToggleButton::builder().label("🧹 Eraser").build();
-    eraser_btn.set_tooltip_text(Some("Erase strokes"));
     eraser_btn.set_group(Some(&pen_btn));
     {
-        let as_ = app_state.clone();
-        let ds_ = draw_state.clone();
-        let da_ = da.clone();
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         eraser_btn.connect_toggled(move |b| {
-            if b.is_active() { 
-                as_.borrow_mut().current_tool = Tool::Eraser; 
-                ds_.borrow_mut().selection_rect = None;
-                da_.set_cursor_from_name(Some("crosshair"));
-                da_.queue_draw();
-            }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Eraser; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("crosshair")); da_.queue_draw(); }
         });
     }
-    bar.append(&eraser_btn);
+    tools_group.append(&eraser_btn);
 
     let spray_btn = ToggleButton::builder().label("💨 Spray").build();
-    spray_btn.set_tooltip_text(Some("Spray Can Tool"));
     spray_btn.set_group(Some(&pen_btn));
     {
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
+        spray_btn.connect_toggled(move |b| {
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Spray; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("crosshair")); da_.queue_draw(); }
+        });
+    }
+    tools_group.append(&spray_btn);
+    bar.append(&tools_group);
+
+    // ── Group 3: Shapes ──
+    let shapes_group = GtkBox::new(Orientation::Horizontal, 2);
+    shapes_group.add_css_class("tool-group");
+
+    let shapes_palette: Rc<RefCell<Option<gtk::Window>>> = Rc::new(RefCell::new(None));
+    let shapes_btn = Button::with_label("🔷 Shapes");
+    shapes_btn.set_tooltip_text(Some("Open Shapes Palette"));
+    
+    {
+        let palette_ref = shapes_palette.clone();
+        let parent_win = window.clone();
         let as_ = app_state.clone();
         let ds_ = draw_state.clone();
         let da_ = da.clone();
-        spray_btn.connect_toggled(move |b| {
-            if b.is_active() { 
-                as_.borrow_mut().current_tool = Tool::Spray; 
-                ds_.borrow_mut().selection_rect = None;
-                da_.set_cursor_from_name(Some("crosshair"));
-                da_.queue_draw();
+        let pen_btn_ = pen_btn.clone();
+        
+        shapes_btn.connect_clicked(move |_| {
+            if let Some(win) = palette_ref.borrow().as_ref() {
+                win.present();
+                return;
             }
-        });
-    }
-    bar.append(&spray_btn);
 
-    bar.append(&Separator::new(Orientation::Vertical));
-
-    // ── Shapes Popover ──
-    let shapes_btn = MenuButton::builder().label("🔷 Shapes").build();
-    shapes_btn.set_tooltip_text(Some("Draw geometric shapes"));
-    
-    let shapes_popover = gtk::PopoverMenu::builder().build();
-    let shapes_box = gtk::Box::new(Orientation::Vertical, 4);
-    shapes_box.set_margin_start(8);
-    shapes_box.set_margin_end(8);
-    shapes_box.set_margin_top(8);
-    shapes_box.set_margin_bottom(8);
-
-    let shape_tools: &[(&str, Tool, &str)] = &[
-        ("╱ Line",    Tool::Line,      "Straight line"),
-        ("□ Rect",    Tool::Rectangle, "Rectangle"),
-        ("○ Circle",  Tool::Circle,    "Circle / Ellipse"),
-        ("→ Arrow",   Tool::Arrow,     "Arrow"),
-        ("★ Star",    Tool::Star,      "5-point star"),
-        ("♥ Heart",   Tool::Heart,     "Heart"),
-        ("△ Triangle",Tool::Triangle,  "Triangle"),
-        ("◇ Diamond", Tool::Diamond,   "Diamond"),
-    ];
-
-
-    // 2-column grid layout
-    for row_i in 0..(shape_tools.len() / 2) {
-        let row = GtkBox::new(Orientation::Horizontal, 4);
-        for col_i in 0..2 {
-            let idx = row_i * 2 + col_i;
-            let (label, tool, tip) = &shape_tools[idx];
-            let btn = ToggleButton::builder().label(*label).hexpand(true).build();
-            btn.set_tooltip_text(Some(tip));
-            btn.set_group(Some(&pen_btn));
-            let (as_, tc) = (app_state.clone(), tool.clone());
-            let ds_ = draw_state.clone();
-            let da_ = da.clone();
-            let pop_ = shapes_popover.clone();
-            btn.connect_toggled(move |b| {
-                if b.is_active() { 
-                    as_.borrow_mut().current_tool = tc.clone(); 
-                    ds_.borrow_mut().selection_rect = None;
-                    da_.set_cursor_from_name(Some("crosshair"));
-                    da_.queue_draw();
-                    pop_.popdown();
+            let win = gtk::Window::builder()
+                .title("Shapes Palette")
+                .transient_for(&parent_win)
+                .destroy_with_parent(true)
+                .default_width(260)
+                .default_height(400)
+                .build();
+                
+            win.connect_close_request({
+                let pref = palette_ref.clone();
+                move |_| {
+                    *pref.borrow_mut() = None;
+                    gtk::glib::Propagation::Proceed
                 }
             });
-            row.append(&btn);
-        }
-        shapes_box.append(&row);
-    }
 
-    let shapes_pop = Popover::new();
-    shapes_pop.set_child(Some(&shapes_box));
-    let shapes_menu = MenuButton::builder()
-        .label("🔷 Shapes")
-        .popover(&shapes_pop)
-        .build();
-    shapes_menu.set_tooltip_text(Some("Insert shape"));
-    bar.append(&shapes_menu);
+            let scroll = ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .vscrollbar_policy(gtk::PolicyType::Automatic)
+                .build();
 
-    bar.append(&Separator::new(Orientation::Vertical));
+            let main_box = GtkBox::new(Orientation::Vertical, 12);
+            main_box.set_margin_start(12);
+            main_box.set_margin_end(12);
+            main_box.set_margin_top(12);
+            main_box.set_margin_bottom(12);
 
-    // Undo button
-    let undo_btn = Button::with_label("↩ Undo");
-    undo_btn.set_tooltip_text(Some("Undo (Ctrl+Z)"));
-    {
-        let (as_, da) = (app_state.clone(), da.clone());
-        undo_btn.connect_clicked(move |_| {
-            as_.borrow_mut().current_note_mut().undo();
-            da.queue_draw();
+            let categories = [
+                ("Basic Shapes", vec![
+                    ("╱ Line", Tool::Line), ("□ Rect", Tool::Rectangle),
+                    ("○ Circle", Tool::Circle), ("△ Triangle", Tool::Triangle),
+                    ("◇ Diamond", Tool::Diamond), ("▭ RRect", Tool::RoundedRect),
+                ]),
+                ("Diagramming & UML", vec![
+                    ("→ Arrow", Tool::Arrow), ("👤 Actor", Tool::Actor),
+                    ("🗂 UML", Tool::UmlClass),
+                ]),
+                ("Icons & Others", vec![
+                    ("☁ Cloud", Tool::Cloud), ("🛢 Data", Tool::Database),
+                    ("★ Star", Tool::Star), ("♥ Heart", Tool::Heart),
+                ]),
+            ];
+
+            for (title, items) in categories.iter() {
+                let lbl = Label::new(None);
+                lbl.set_markup(&format!("<span size='large' weight='bold'>{}</span>", title));
+                lbl.set_halign(gtk::Align::Start);
+                main_box.append(&lbl);
+                
+                let grid = gtk::Grid::builder()
+                    .row_spacing(6)
+                    .column_spacing(6)
+                    .column_homogeneous(true)
+                    .build();
+
+                for (i, (label, tool)) in items.iter().enumerate() {
+                    let btn = ToggleButton::builder().label(*label).build();
+                    btn.set_group(Some(&pen_btn_));
+                    
+                    let (as2, ds2, da2) = (as_.clone(), ds_.clone(), da_.clone());
+                    let tc = tool.clone();
+                    btn.connect_toggled(move |b| {
+                        if b.is_active() {
+                            as2.borrow_mut().current_tool = tc.clone();
+                            ds2.borrow_mut().selection_rect = None;
+                            da2.set_cursor_from_name(Some("crosshair"));
+                            da2.queue_draw();
+                        }
+                    });
+                    grid.attach(&btn, (i % 2) as i32, (i / 2) as i32, 1, 1);
+                }
+                main_box.append(&grid);
+                main_box.append(&Separator::new(Orientation::Horizontal));
+            }
+
+            scroll.set_child(Some(&main_box));
+            win.set_child(Some(&scroll));
+            
+            *palette_ref.borrow_mut() = Some(win.clone());
+            win.present();
         });
     }
-    bar.append(&undo_btn);
 
-    bar.append(&Separator::new(Orientation::Vertical));
+    shapes_group.append(&shapes_btn);
+    bar.append(&shapes_group);
 
-    // Color
-    bar.append(&Label::new(Some("Color:")));
+    // ── Group 4: Actions ──
+    let actions_group = GtkBox::new(Orientation::Horizontal, 4);
+    actions_group.add_css_class("tool-group");
+
+    let undo_btn = Button::with_label("↩ Undo");
+    {
+        let (as_, da_) = (app_state.clone(), da.clone());
+        undo_btn.connect_clicked(move |_| { as_.borrow_mut().current_note_mut().undo(); da_.queue_draw(); });
+    }
+    actions_group.append(&undo_btn);
+
+    actions_group.append(&Label::new(Some("Color:")));
     let color_btn = ColorButton::new();
     color_btn.set_rgba(&RGBA::new(0.05, 0.05, 0.05, 1.0));
     {
         let as_ = app_state.clone();
         color_btn.connect_color_set(move |b| {
             let rgba = b.rgba();
-            as_.borrow_mut().current_color = Color {
-                r: rgba.red() as f64,
-                g: rgba.green() as f64,
-                b: rgba.blue() as f64,
-                a: rgba.alpha() as f64,
-            };
+            as_.borrow_mut().current_color = Color { r: rgba.red() as f64, g: rgba.green() as f64, b: rgba.blue() as f64, a: rgba.alpha() as f64 };
         });
     }
-    bar.append(&color_btn);
+    actions_group.append(&color_btn);
 
-    bar.append(&Separator::new(Orientation::Vertical));
-
-    // Width
-    bar.append(&Label::new(Some("Width:")));
+    actions_group.append(&Label::new(Some("Width:")));
     let scale = Scale::with_range(Orientation::Horizontal, 1.0, 30.0, 0.5);
     scale.set_value(2.0);
-    scale.set_size_request(120, -1);
-    scale.set_draw_value(true);
+    scale.set_size_request(100, -1);
     {
         let as_ = app_state.clone();
         scale.connect_value_changed(move |s| { as_.borrow_mut().line_width = s.value(); });
     }
-    bar.append(&scale);
-    
-    bar.append(&Separator::new(Orientation::Vertical));
-    
-    // ── Zoom Controls ──
+    actions_group.append(&scale);
+    bar.append(&actions_group);
+
+    // ── Group 5: View & Clipboard ──
+    let view_group = GtkBox::new(Orientation::Horizontal, 2);
+    view_group.add_css_class("tool-group");
+
     let zoom_in_btn = gtk::Button::with_label("🔍+");
-    zoom_in_btn.set_tooltip_text(Some("Zoom In"));
     {
-        let as_ = app_state.clone();
-        let da_ = da.clone();
+        let (as_, da_) = (app_state.clone(), da.clone());
         zoom_in_btn.connect_clicked(move |_| {
-            let mut app = as_.borrow_mut();
-            app.zoom_level += 0.2;
+            let mut app = as_.borrow_mut(); app.zoom_level += 0.2;
             da_.set_size_request((app.canvas_width * app.zoom_level) as i32, (app.canvas_height * app.zoom_level) as i32);
             da_.queue_draw();
         });
     }
-    bar.append(&zoom_in_btn);
-    
+    view_group.append(&zoom_in_btn);
+
     let zoom_out_btn = gtk::Button::with_label("🔍-");
-    zoom_out_btn.set_tooltip_text(Some("Zoom Out"));
     {
-        let as_ = app_state.clone();
-        let da_ = da.clone();
+        let (as_, da_) = (app_state.clone(), da.clone());
         zoom_out_btn.connect_clicked(move |_| {
-            let mut app = as_.borrow_mut();
-            if app.zoom_level > 0.2 { app.zoom_level -= 0.2; }
+            let mut app = as_.borrow_mut(); if app.zoom_level > 0.2 { app.zoom_level -= 0.2; }
             da_.set_size_request((app.canvas_width * app.zoom_level) as i32, (app.canvas_height * app.zoom_level) as i32);
             da_.queue_draw();
         });
     }
-    bar.append(&zoom_out_btn);
+    view_group.append(&zoom_out_btn);
 
-    bar.append(&Separator::new(Orientation::Vertical));
-
-    // Paste image from clipboard
-    let paste_btn = Button::with_label("📋 Paste");
-    paste_btn.set_tooltip_text(Some("Paste image from clipboard"));
+    let cut_btn = Button::with_label("✂️ Cut");
+    cut_btn.set_tooltip_text(Some("Cut selected items"));
     {
-        let (as_, da) = (app_state.clone(), da.clone());
-        paste_btn.connect_clicked(move |btn| {
-            let clipboard = btn.clipboard();
-            let (as_c, da_c) = (as_.clone(), da.clone());
-            clipboard.read_texture_async(
-                gtk::gio::Cancellable::NONE,
-                move |result| {
-                    match result {
-                        Ok(Some(texture)) => {
-                            // Save texture to temp PNG file, then read bytes
-                            let tmp = "/tmp/sp_paste.png";
-                            match texture.save_to_png(tmp) {
-                                Ok(()) => {
-                                    if let Ok(bytes) = std::fs::read(tmp) {
-                                        std::fs::remove_file(tmp).ok();
-                                        let mut app = as_c.borrow_mut();
-                                        let note = app.current_note_mut();
-                                        note.push_undo();
-                                        note.images.push(state::CanvasImage {
-                                            x: 20.0, y: 20.0,
-                                            width: texture.width() as f64,
-                                            height: texture.height() as f64,
-                                            png_data: bytes,
-                                        });
-                                    }
-                                }
-                                Err(e) => eprintln!("SimplePaint: paste save_to_png failed: {e}"),
-                            }
-                            da_c.queue_draw();
-                        }
-                        Ok(None) => eprintln!("SimplePaint: clipboard has no image"),
-                        Err(e) => eprintln!("SimplePaint: clipboard read error: {e}"),
-                    }
-                },
-            );
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
+        cut_btn.connect_clicked(move |_| {
+            let mut d = ds_.borrow_mut();
+            if !d.selected_strokes.is_empty() || !d.selected_shapes.is_empty() || !d.selected_images.is_empty() || !d.selected_tables.is_empty() || !d.selected_texts.is_empty() {
+                let mut app = as_.borrow_mut();
+                let note = app.current_note_mut();
+                note.push_undo();
+                
+                // Clear clipboard
+                let mut clip = state::Note::default();
+
+                let mut del_s: Vec<_> = d.selected_strokes.iter().copied().collect(); del_s.sort_unstable_by(|a,b| b.cmp(a));
+                let mut del_sh: Vec<_> = d.selected_shapes.iter().copied().collect(); del_sh.sort_unstable_by(|a,b| b.cmp(a));
+                let mut del_img: Vec<_> = d.selected_images.iter().copied().collect(); del_img.sort_unstable_by(|a,b| b.cmp(a));
+                let mut del_tbl: Vec<_> = d.selected_tables.iter().copied().collect(); del_tbl.sort_unstable_by(|a,b| b.cmp(a));
+                let mut del_txt: Vec<_> = d.selected_texts.iter().copied().collect(); del_txt.sort_unstable_by(|a,b| b.cmp(a));
+                
+                for i in del_s { clip.strokes.push(note.strokes.remove(i)); }
+                for i in del_sh { clip.shapes.push(note.shapes.remove(i)); }
+                for i in del_img { clip.images.push(note.images.remove(i)); }
+                for i in del_tbl { clip.tables.push(note.tables.remove(i)); }
+                for i in del_txt { clip.texts.push(note.texts.remove(i)); }
+                
+                app.clipboard_note = clip;
+                
+                d.selection_rect = None;
+                d.selected_strokes.clear();
+                d.selected_shapes.clear();
+                d.selected_images.clear();
+                d.selected_tables.clear();
+                d.selected_texts.clear();
+                
+                da_.queue_draw();
+            }
         });
     }
-    bar.append(&paste_btn);
+    view_group.append(&cut_btn);
 
-    bar.add_css_class("toolbar");
+    let paste_btn = Button::with_label("📋 Paste");
+    {
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
+        paste_btn.connect_clicked(move |btn| {
+            // First check internal vector clipboard
+            let mut has_internal = false;
+            {
+                let mut app = as_.borrow_mut();
+                let clip = app.clipboard_note.clone();
+                if !clip.strokes.is_empty() || !clip.shapes.is_empty() || !clip.images.is_empty() || !clip.tables.is_empty() || !clip.texts.is_empty() {
+                    let note = app.current_note_mut();
+                    note.push_undo();
+                    // Offset pasted items slightly to distinguish them
+                    for mut s in clip.strokes { for p in &mut s.points { p.x += 20.0; p.y += 20.0; } note.strokes.push(s); }
+                    for mut sh in clip.shapes { sh.x1 += 20.0; sh.y1 += 20.0; sh.x2 += 20.0; sh.y2 += 20.0; note.shapes.push(sh); }
+                    for mut img in clip.images { img.x += 20.0; img.y += 20.0; note.images.push(img); }
+                    for mut tb in clip.tables { tb.x += 20.0; tb.y += 20.0; note.tables.push(tb); }
+                    for mut tx in clip.texts { tx.x += 20.0; tx.y += 20.0; note.texts.push(tx); }
+                    has_internal = true;
+                    // Note: pasted items are not automatically selected here for simplicity
+                }
+            }
+            if has_internal {
+                let mut d = ds_.borrow_mut();
+                d.selection_rect = None;
+                d.selected_strokes.clear();
+                d.selected_shapes.clear();
+                d.selected_images.clear();
+                d.selected_tables.clear();
+                d.selected_texts.clear();
+                da_.queue_draw();
+                return;
+            }
+
+            // Fallback to system image clipboard
+            let clipboard = btn.clipboard();
+            let (as_c, da_c) = (as_.clone(), da_.clone());
+            clipboard.read_texture_async(gtk::gio::Cancellable::NONE, move |result| {
+                if let Ok(Some(texture)) = result {
+                    let tmp = "/tmp/sp_paste.png";
+                    if texture.save_to_png(tmp).is_ok() {
+                        if let Ok(bytes) = std::fs::read(tmp) {
+                            std::fs::remove_file(tmp).ok();
+                            let mut app = as_c.borrow_mut(); let note = app.current_note_mut(); note.push_undo();
+                            note.images.push(state::CanvasImage { x: 20.0, y: 20.0, width: texture.width() as f64, height: texture.height() as f64, png_data: bytes });
+                        }
+                    }
+                    da_c.queue_draw();
+                }
+            });
+        });
+    }
+    view_group.append(&paste_btn);
+    bar.append(&view_group);
+
     bar
 }
 
