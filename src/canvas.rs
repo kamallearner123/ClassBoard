@@ -124,20 +124,26 @@ pub fn draw_shape(cr: &Context, shape: &Shape) {
             cr.stroke().unwrap();
         }
         ShapeKind::Heart => {
-            let cx = (x1 + x2) / 2.0;
-            let cy = (y1 + y2) / 2.0;
-            let top = y1.min(y2);
-            let bot = y1.max(y2);
-            let lft = x1.min(x2);
-            let rgt = x1.max(x2);
-            let w = rgt - lft;
-            let h = bot - top;
-            cr.move_to(cx, bot);
-            cr.curve_to(lft - w*0.1, cy, lft, top + h*0.1, cx - w*0.25, top + h*0.1);
-            cr.curve_to(cx, top - h*0.2, cx, top - h*0.2, cx + w*0.25, top + h*0.1);
-            cr.curve_to(rgt, top + h*0.1, rgt + w*0.1, cy, cx, bot);
-            cr.close_path();
-            cr.stroke().unwrap();
+            let rx = x1.min(x2);
+            let ry = y1.min(y2);
+            let w = (x2 - x1).abs();
+            let h = (y2 - y1).abs();
+            
+            if w > 0.0 && h > 0.0 {
+                cr.save().unwrap();
+                cr.translate(rx, ry);
+                cr.scale(w / 100.0, h / 100.0);
+                
+                cr.move_to(50.0, 30.0);
+                cr.curve_to(50.0, 0.0, 0.0, 0.0, 0.0, 40.0);
+                cr.curve_to(0.0, 70.0, 50.0, 90.0, 50.0, 100.0);
+                cr.curve_to(50.0, 90.0, 100.0, 70.0, 100.0, 40.0);
+                cr.curve_to(100.0, 0.0, 50.0, 0.0, 50.0, 30.0);
+                cr.close_path();
+                
+                cr.restore().unwrap();
+                cr.stroke().unwrap();
+            }
         }
 
         ShapeKind::Triangle => {
@@ -219,31 +225,33 @@ pub fn draw_shape(cr: &Context, shape: &Shape) {
             let h = (y2 - y1).abs();
             let er = (h * 0.15).max(5.0); // ellipse y-radius
             
-            cr.save().unwrap();
-            
-            // Top ellipse
-            cr.save().unwrap();
-            cr.translate(rx + w / 2.0, ry + er);
-            cr.scale(w / 2.0, er);
-            cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
-            cr.restore().unwrap();
-            cr.stroke().unwrap();
-            
-            // Bottom half-ellipse
-            cr.save().unwrap();
-            cr.translate(rx + w / 2.0, ry + h - er);
-            cr.scale(w / 2.0, er);
-            cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::PI);
-            cr.restore().unwrap();
-            
-            // Sides
-            cr.move_to(rx, ry + er);
-            cr.line_to(rx, ry + h - er);
-            cr.move_to(rx + w, ry + er);
-            cr.line_to(rx + w, ry + h - er);
-            
-            cr.stroke().unwrap();
-            cr.restore().unwrap();
+            if w > 0.0 && h > 0.0 {
+                cr.save().unwrap();
+                
+                // Top ellipse
+                cr.save().unwrap();
+                cr.translate(rx + w / 2.0, ry + er);
+                cr.scale(w / 2.0, er);
+                cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+                cr.restore().unwrap();
+                cr.stroke().unwrap();
+                
+                // Bottom half-ellipse
+                cr.save().unwrap();
+                cr.translate(rx + w / 2.0, ry + h - er);
+                cr.scale(w / 2.0, er);
+                cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::PI);
+                cr.restore().unwrap();
+                
+                // Sides
+                cr.move_to(rx, ry + er);
+                cr.line_to(rx, ry + h - er);
+                cr.move_to(rx + w, ry + er);
+                cr.line_to(rx + w, ry + h - er);
+                
+                cr.stroke().unwrap();
+                cr.restore().unwrap();
+            }
         }
         ShapeKind::Cloud => {
             let rx = x1.min(x2);
@@ -251,20 +259,20 @@ pub fn draw_shape(cr: &Context, shape: &Shape) {
             let w = (x2 - x1).abs();
             let h = (y2 - y1).abs();
             
-            let cx = rx + w / 2.0;
-            let cy = ry + h / 2.0;
-            
-            // Draw a basic cloud using multiple overlapping circles
-            cr.arc(cx, cy + h * 0.1, h * 0.4, 0.0, std::f64::consts::TAU);
-            cr.arc(cx - w * 0.25, cy + h * 0.1, h * 0.3, 0.0, std::f64::consts::TAU);
-            cr.arc(cx + w * 0.25, cy + h * 0.1, h * 0.3, 0.0, std::f64::consts::TAU);
-            cr.arc(cx - w * 0.15, cy - h * 0.15, h * 0.35, 0.0, std::f64::consts::TAU);
-            cr.arc(cx + w * 0.15, cy - h * 0.15, h * 0.35, 0.0, std::f64::consts::TAU);
-            
-            // Use a clip and fill to just draw the outline, or just stroke them all.
-            // Since filling all circles with background color would erase things behind,
-            // we will just stroke the whole path.
-            cr.stroke().unwrap();
+            if w > 0.0 && h > 0.0 {
+                cr.save().unwrap();
+                cr.translate(rx, ry);
+                cr.scale(w / 100.0, h / 100.0);
+                
+                cr.move_to(20.0, 70.0);
+                cr.curve_to(0.0, 70.0, 0.0, 40.0, 25.0, 40.0);
+                cr.curve_to(25.0, 10.0, 65.0, 10.0, 70.0, 35.0);
+                cr.curve_to(100.0, 30.0, 100.0, 70.0, 80.0, 70.0);
+                cr.close_path();
+                
+                cr.restore().unwrap();
+                cr.stroke().unwrap();
+            }
         }
     }
 }

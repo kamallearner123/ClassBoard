@@ -24,7 +24,7 @@ fn apply_css() {
         background: radial-gradient(circle at top left, #f8fafc 0%, #e2e8f0 100%);
     }
     .toolbar {
-        background: rgba(255, 255, 255, 0.85);
+        background: rgba(241, 245, 249, 0.95);
         border-bottom: 1px solid rgba(0, 0, 0, 0.08);
         padding: 6px 12px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.03);
@@ -51,7 +51,7 @@ fn apply_css() {
         box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
     }
     .sidebar {
-        background: rgba(255, 255, 255, 0.6);
+        background: rgba(241, 245, 249, 0.90);
         border-right: 1px solid rgba(0, 0, 0, 0.08);
     }
     .sidebar button.selected {
@@ -347,6 +347,44 @@ fn build_toolbar(
     }
     file_group.append(&save_as_btn);
 
+    let export_btn = MenuButton::new();
+    export_btn.set_label("⬇️ Export");
+    let export_pop = Popover::new();
+    let export_box = GtkBox::new(Orientation::Vertical, 4);
+    export_box.set_margin_top(8); export_box.set_margin_bottom(8);
+    export_box.set_margin_start(8); export_box.set_margin_end(8);
+    
+    let exp_png = Button::with_label("Export Note as PNG");
+    {
+        let (as_, win) = (app_state.clone(), window.clone());
+        exp_png.connect_clicked(move |_| { export_note_dialog(&as_, &win, "png"); });
+    }
+    let exp_jpg = Button::with_label("Export Note as JPEG");
+    {
+        let (as_, win) = (app_state.clone(), window.clone());
+        exp_jpg.connect_clicked(move |_| { export_note_dialog(&as_, &win, "jpeg"); });
+    }
+    let exp_pdf = Button::with_label("Export Note as PDF");
+    {
+        let (as_, win) = (app_state.clone(), window.clone());
+        exp_pdf.connect_clicked(move |_| { export_note_dialog(&as_, &win, "pdf"); });
+    }
+    let exp_sess_pdf = Button::with_label("Export Session as PDF");
+    {
+        let (as_, win) = (app_state.clone(), window.clone());
+        exp_sess_pdf.connect_clicked(move |_| { export_session_dialog(&as_, &win); });
+    }
+    
+    export_box.append(&exp_png);
+    export_box.append(&exp_jpg);
+    export_box.append(&exp_pdf);
+    export_box.append(&Separator::new(Orientation::Horizontal));
+    export_box.append(&exp_sess_pdf);
+    
+    export_pop.set_child(Some(&export_box));
+    export_btn.set_popover(Some(&export_pop));
+    file_group.append(&export_btn);
+
     let gdrive_btn = Button::with_label("☁️ GDrive");
     gdrive_btn.set_tooltip_text(Some("Save to Google Drive"));
     {
@@ -492,11 +530,11 @@ fn build_toolbar(
                     ("○ Circle", Tool::Circle), ("△ Triangle", Tool::Triangle),
                     ("◇ Diamond", Tool::Diamond), ("▭ RRect", Tool::RoundedRect),
                 ]),
-                ("Diagramming & UML", vec![
+                ("Diagramming &amp; UML", vec![
                     ("→ Arrow", Tool::Arrow), ("👤 Actor", Tool::Actor),
                     ("🗂 UML", Tool::UmlClass),
                 ]),
-                ("Icons & Others", vec![
+                ("Icons &amp; Others", vec![
                     ("☁ Cloud", Tool::Cloud), ("🛢 Data", Tool::Database),
                     ("★ Star", Tool::Star), ("♥ Heart", Tool::Heart),
                 ]),
@@ -1143,6 +1181,11 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                         Tool::Heart => ShapeKind::Heart,
                         Tool::Triangle => ShapeKind::Triangle,
                         Tool::Diamond => ShapeKind::Diamond,
+                        Tool::RoundedRect => ShapeKind::RoundedRect,
+                        Tool::UmlClass => ShapeKind::UmlClass,
+                        Tool::Actor => ShapeKind::Actor,
+                        Tool::Database => ShapeKind::Database,
+                        Tool::Cloud => ShapeKind::Cloud,
                         _ => ShapeKind::Line,
                     };
                     d.preview_shape = Some(Shape {
@@ -1286,9 +1329,91 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
             if tool == Tool::Fill {
                 let mut app = as_.borrow_mut();
                 let color = app.current_color.clone();
-                let note = app.current_note_mut();
-                note.push_undo();
-                note.bg_color = Some(color);
+                let w = app.canvas_width as i32;
+                let h = app.canvas_height as i32;
+                let sx = wx as i32;
+                let sy = wy as i32;
+                
+                if sx >= 0 && sx < w && sy >= 0 && sy < h {
+                    let note = app.current_note().clone();
+                    if let Ok(mut surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h) {
+                        if let Ok(cr) = cairo::Context::new(&surface) {
+                            // Render everything to temp surface
+                            let bg = note.bg_color.clone().unwrap_or(state::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
+                            cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
+                            cr.paint().unwrap();
+                            for img in &note.images { draw_canvas_image(&cr, img); }
+                            for txt in &note.texts { draw_canvas_text(&cr, txt); }
+                            for s in &note.strokes { draw_stroke(&cr, s); }
+                            for sp in &note.sprays { draw_spray(&cr, sp); }
+                            for sh in &note.shapes { draw_shape(&cr, sh); }
+                            drop(cr);
+                            
+                            if let Ok(mut data) = surface.data() {
+                                let stride = w as usize * 4;
+                                let start_idx = sy as usize * stride + sx as usize * 4;
+                                let tb = data[start_idx + 0];
+                                let tg = data[start_idx + 1];
+                                let tr = data[start_idx + 2];
+                                let ta = data[start_idx + 3];
+                                
+                                let fb = (color.b * 255.0) as u8;
+                                let fg = (color.g * 255.0) as u8;
+                                let fr = (color.r * 255.0) as u8;
+                                let fa = (color.a * 255.0) as u8;
+                                
+                                if !(tr == fr && tg == fg && tb == fb && ta == fa) {
+                                    let mut visited = vec![false; (w * h) as usize];
+                                    let mut queue = std::collections::VecDeque::new();
+                                    queue.push_back((sx, sy));
+                                    visited[(sy * w + sx) as usize] = true;
+                                    
+                                    let mut fill_data = vec![0u8; (w * h * 4) as usize];
+                                    let tolerance = 5i32;
+                                    let mut min_x = sx; let mut max_x = sx;
+                                    let mut min_y = sy; let mut max_y = sy;
+                                    
+                                    while let Some((cx, cy)) = queue.pop_front() {
+                                        let idx = (cy as usize) * stride + (cx as usize) * 4;
+                                        let b = data[idx+0] as i32; let g = data[idx+1] as i32; let r = data[idx+2] as i32; let a = data[idx+3] as i32;
+                                        if (b - tb as i32).abs() <= tolerance && (g - tg as i32).abs() <= tolerance && (r - tr as i32).abs() <= tolerance && (a - ta as i32).abs() <= tolerance {
+                                            fill_data[idx+0] = fb; fill_data[idx+1] = fg; fill_data[idx+2] = fr; fill_data[idx+3] = fa;
+                                            min_x = min_x.min(cx); max_x = max_x.max(cx); min_y = min_y.min(cy); max_y = max_y.max(cy);
+                                            
+                                            if cx > 0 && !visited[(cy * w + cx - 1) as usize] { visited[(cy * w + cx - 1) as usize] = true; queue.push_back((cx-1, cy)); }
+                                            if cx < w-1 && !visited[(cy * w + cx + 1) as usize] { visited[(cy * w + cx + 1) as usize] = true; queue.push_back((cx+1, cy)); }
+                                            if cy > 0 && !visited[((cy - 1) * w + cx) as usize] { visited[((cy - 1) * w + cx) as usize] = true; queue.push_back((cx, cy-1)); }
+                                            if cy < h-1 && !visited[((cy + 1) * w + cx) as usize] { visited[((cy + 1) * w + cx) as usize] = true; queue.push_back((cx, cy+1)); }
+                                        }
+                                    }
+                                    
+                                    if max_x >= min_x && max_y >= min_y {
+                                        let crop_w = (max_x - min_x + 1) as usize;
+                                        let crop_h = (max_y - min_y + 1) as usize;
+                                        if let Ok(mut fill_surf) = cairo::ImageSurface::create(cairo::Format::ARgb32, crop_w as i32, crop_h as i32) {
+                                            if let Ok(mut fd) = fill_surf.data() {
+                                                for cy in 0..crop_h {
+                                                    let src_y = min_y as usize + cy;
+                                                    let src_start = src_y * stride + min_x as usize * 4;
+                                                    let dst_start = cy * crop_w * 4;
+                                                    fd[dst_start .. dst_start + crop_w * 4].copy_from_slice(&fill_data[src_start .. src_start + crop_w * 4]);
+                                                }
+                                            }
+                                            let mut png_bytes = Vec::new();
+                                            if fill_surf.write_to_png(&mut png_bytes).is_ok() {
+                                                let mut note_mut = app.current_note_mut();
+                                                note_mut.push_undo();
+                                                note_mut.images.push(state::CanvasImage {
+                                                    x: min_x as f64, y: min_y as f64, width: crop_w as f64, height: crop_h as f64, png_data: png_bytes,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 da_.queue_draw();
                 return;
             } else if tool == Tool::Text {
@@ -1435,6 +1560,131 @@ fn open_dialog(
                         rebuild_sidebar(&sl, &as_, &da, &win);
                         da.queue_draw();
                     }
+                }
+            }
+        }
+        d.destroy();
+    });
+    dialog.show();
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+fn render_note(note: &state::Note, cr: &cairo::Context) {
+    cr.set_antialias(cairo::Antialias::Best);
+    
+    let bg = note.bg_color.clone().unwrap_or(state::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
+    cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
+    cr.paint().unwrap();
+    
+    for img in &note.images { draw_canvas_image(cr, img); }
+    for txt in &note.texts { draw_canvas_text(cr, txt); }
+    for s in &note.strokes { draw_stroke(cr, s); }
+    for sp in &note.sprays { draw_spray(cr, sp); }
+    for sh in &note.shapes { draw_shape(cr, sh); }
+}
+
+fn export_note_dialog(app_state: &SharedApp, window: &ApplicationWindow, format: &'static str) {
+    let title = match format {
+        "png" => "Export Note as PNG",
+        "jpeg" => "Export Note as JPEG",
+        "pdf" => "Export Note as PDF",
+        _ => "Export Note",
+    };
+    let dialog = gtk::FileChooserDialog::new(
+        Some(title),
+        Some(window),
+        gtk::FileChooserAction::Save,
+        &[("Export", gtk::ResponseType::Accept), ("Cancel", gtk::ResponseType::Cancel)],
+    );
+    
+    let (app_width, app_height, note_name) = {
+        let app = app_state.borrow();
+        (app.canvas_width, app.canvas_height, app.current_note().name.clone())
+    };
+    
+    let name = format!("{}.{}", note_name, format);
+    dialog.set_current_name(&name);
+    
+    let as_ = app_state.clone();
+    dialog.connect_response(move |d, resp| {
+        if resp == gtk::ResponseType::Accept {
+            if let Some(path) = d.file().and_then(|f| f.path()) {
+                let note = as_.borrow().current_note().clone();
+                match format {
+                    "png" => {
+                        if let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, app_width as i32, app_height as i32) {
+                            if let Ok(cr) = cairo::Context::new(&surface) {
+                                render_note(&note, &cr);
+                                if let Ok(mut file) = std::fs::File::create(&path) {
+                                    surface.write_to_png(&mut file).ok();
+                                }
+                            }
+                        }
+                    }
+                    "jpeg" => {
+                        if let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, app_width as i32, app_height as i32) {
+                            if let Ok(cr) = cairo::Context::new(&surface) {
+                                render_note(&note, &cr);
+                                let mut buf = Vec::new();
+                                if surface.write_to_png(&mut buf).is_ok() {
+                                    if let Ok(img) = image::load_from_memory(&buf) {
+                                        img.into_rgb8().save_with_format(&path, image::ImageFormat::Jpeg).ok();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "pdf" => {
+                        let path_str = path.to_string_lossy().into_owned();
+                        if let Ok(surface) = cairo::PdfSurface::new(app_width, app_height, path_str) {
+                            if let Ok(cr) = cairo::Context::new(&surface) {
+                                render_note(&note, &cr);
+                                cr.show_page();
+                                surface.finish();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        d.destroy();
+    });
+    dialog.show();
+}
+
+fn export_session_dialog(app_state: &SharedApp, window: &ApplicationWindow) {
+    let dialog = gtk::FileChooserDialog::new(
+        Some("Export Session as PDF"),
+        Some(window),
+        gtk::FileChooserAction::Save,
+        &[("Export", gtk::ResponseType::Accept), ("Cancel", gtk::ResponseType::Cancel)],
+    );
+    
+    let (app_width, app_height, sess_name) = {
+        let app = app_state.borrow();
+        (app.canvas_width, app.canvas_height, app.sessions[app.current_session_idx].name.clone())
+    };
+    
+    let name = format!("{}.pdf", sess_name);
+    dialog.set_current_name(&name);
+    
+    let as_ = app_state.clone();
+    dialog.connect_response(move |d, resp| {
+        if resp == gtk::ResponseType::Accept {
+            if let Some(path) = d.file().and_then(|f| f.path()) {
+                let path_str = path.to_string_lossy().into_owned();
+                if let Ok(surface) = cairo::PdfSurface::new(app_width, app_height, path_str) {
+                    let app = as_.borrow();
+                    let session = &app.sessions[app.current_session_idx];
+                    for note in &session.notes {
+                        if let Ok(cr) = cairo::Context::new(&surface) {
+                            render_note(note, &cr);
+                            cr.show_page();
+                        }
+                    }
+                    surface.finish();
                 }
             }
         }
