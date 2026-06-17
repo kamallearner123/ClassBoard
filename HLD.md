@@ -10,23 +10,23 @@ The application strictly follows a Model-View-Controller (MVC) and unidirectiona
 ```mermaid
 flowchart TD
     subgraph UI ["User Interface (GTK4 View)"]
-        MainWindow[Application Window]
-        Toolbar[Toolbar & Tools Menu]
-        Sidebar[Sidebar (Sessions/Notes)]
-        DrawingArea[Canvas DrawingArea]
+        MainWindow["Application Window"]
+        Toolbar["Toolbar & Tools Menu"]
+        Sidebar["Sidebar (Sessions/Notes)"]
+        DrawingArea["Canvas DrawingArea"]
     end
 
     subgraph Controllers ["Event Controllers"]
-        DragHandler[Gesture Drag Controller]
-        ClickHandler[Gesture Click Controller]
-        KeyHandler[Keyboard Event Controller]
+        DragHandler["Gesture Drag Controller"]
+        ClickHandler["Gesture Click Controller"]
+        KeyHandler["Keyboard Event Controller"]
     end
 
     subgraph CoreState ["Application State (Model)"]
-        AppState[Shared AppState]
-        Session[Sessions & Notes]
-        History[Undo/Redo Stack]
-        DrawState[Active Draw State]
+        AppState["Shared AppState"]
+        Session["Sessions & Notes"]
+        History["Undo/Redo Stack"]
+        DrawState["Active Draw State"]
     end
 
     subgraph RenderEngine ["Rendering Engine (Cairo)"]
