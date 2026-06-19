@@ -78,11 +78,11 @@ Using the pre-structured [debian-pkg](file:///home/robin/Projects/ClassBoard/deb
    ```
 3. Generate the `.deb` package:
    ```bash
-   dpkg-deb --build debian-pkg roughnote_0.1.0_amd64.deb
+   dpkg-deb --build debian-pkg roughnote.deb
    ```
 4. Install the package:
    ```bash
-   sudo apt install ./roughnote_0.1.0_amd64.deb
+   sudo apt install ./roughnote.deb
    ```
 
 ### Arch Linux
