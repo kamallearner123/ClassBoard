@@ -12,7 +12,7 @@ use gtk::{
 use gtk::gdk::RGBA;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 
 use state::{AppState, Color, Shape, ShapeKind, Stroke, Point, Tool, CanvasImage, CanvasTable, CanvasText, Spray};
 use canvas::{draw_stroke, draw_shape, draw_canvas_image, draw_canvas_text, draw_spray};
@@ -123,6 +123,40 @@ fn apply_css() {
     );
 }
 
+fn update_window_title(window: &ApplicationWindow, app_state: &SharedApp) {
+    let app = app_state.borrow();
+    let session = &app.sessions[app.current_session_idx];
+    let file_name = match &session.save_path {
+        Some(path) => {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path)
+                .to_string()
+        }
+        None => format!("{} (Unsaved)", session.name),
+    };
+    let title = format!("✏️ roughnote - {}", file_name);
+
+    window.set_title(Some(&title));
+
+    if let Some(titlebar) = window.titlebar() {
+        if let Some(header) = titlebar.downcast_ref::<gtk::HeaderBar>() {
+            if let Some(widget) = header.title_widget() {
+                if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                    label.set_text(&title);
+                }
+            } else {
+                let title_lbl = Label::new(Some(&title));
+                title_lbl.add_css_class("title");
+                title_lbl.set_margin_start(12);
+                title_lbl.set_margin_end(12);
+                header.set_title_widget(Some(&title_lbl));
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct DrawState {
     drawing: bool,
@@ -148,6 +182,9 @@ struct DrawState {
     moving_original_images: Vec<(usize, CanvasImage)>,
     moving_original_tables: Vec<(usize, CanvasTable)>,
     moving_original_texts: Vec<(usize, CanvasText)>,
+
+    // References to tool toggle buttons for keyboard shortcuts
+    tool_buttons: HashMap<state::Tool, ToggleButton>,
 }
 
 type SharedApp = Rc<RefCell<AppState>>;
@@ -171,8 +208,8 @@ fn build_ui(app: &Application) {
     let window = ApplicationWindow::builder()
         .application(app)
         .title("roughnote")
-        .default_width(1440)
-        .default_height(900)
+        .default_width(1920)
+        .default_height(1080)
         .build();
 
     let app_state: SharedApp = Rc::new(RefCell::new(AppState::default()));
@@ -201,7 +238,12 @@ fn build_ui(app: &Application) {
     sidebar_list.set_margin_end(4);
 
     let toolbar = build_toolbar(&app_state, &draw_state, &da, &sidebar_list, &window);
-    root.append(&toolbar);
+    let toolbar_scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .build();
+    toolbar_scroll.set_child(Some(&toolbar));
+    root.append(&toolbar_scroll);
 
     let paned = Paned::new(Orientation::Horizontal);
     paned.set_vexpand(true);
@@ -225,7 +267,7 @@ fn build_ui(app: &Application) {
     root.append(&paned);
 
     setup_canvas(&da, &app_state, &draw_state);
-    setup_keyboard(&window, &app_state, &da, &draw_state);
+    setup_keyboard(&window, &app_state, &da, &draw_state, &sidebar_list);
 
     rebuild_sidebar(&sidebar_list, &app_state, &da, &window);
 
@@ -239,48 +281,313 @@ fn build_ui(app: &Application) {
     window.present();
 }
 
-fn setup_keyboard(window: &ApplicationWindow, app_state: &SharedApp, da: &DrawingArea, draw_state: &SharedDraw) {
+fn setup_keyboard(
+    window: &ApplicationWindow,
+    app_state: &SharedApp,
+    da: &DrawingArea,
+    draw_state: &SharedDraw,
+    sidebar_list: &GtkBox,
+) {
     let ctrl = EventControllerKey::new();
     ctrl.connect_key_pressed({
         let app_state = app_state.clone();
         let da = da.clone();
         let ds = draw_state.clone();
+        let sidebar_list = sidebar_list.clone();
+        let window_clone = window.clone();
         move |_, key, _, mods| {
-            if mods.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
-                if key == gtk::gdk::Key::z {
-                    app_state.borrow_mut().current_note_mut().undo();
+            let is_editing = if let Some(focus) = gtk::prelude::GtkWindowExt::focus(&window_clone) {
+                let type_name = focus.type_().name();
+                focus.is::<gtk::Editable>() || type_name == "GtkTextView" || type_name == "GtkText"
+            } else {
+                false
+            };
+
+            let has_ctrl = mods.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+            let has_shift = mods.contains(gtk::gdk::ModifierType::SHIFT_MASK);
+
+            if has_ctrl {
+                // Ctrl + Z (Undo) / Ctrl + Shift + Z (Redo)
+                if key == gtk::gdk::Key::z || key == gtk::gdk::Key::Z {
+                    if has_shift {
+                        state::Note::redo(app_state.borrow_mut().current_note_mut());
+                    } else {
+                        state::Note::undo(app_state.borrow_mut().current_note_mut());
+                    }
                     da.queue_draw();
                     return gtk::glib::Propagation::Stop;
                 }
-            } else if key == gtk::gdk::Key::Delete || key == gtk::gdk::Key::BackSpace {
-                let mut d = ds.borrow_mut();
-                if !d.selected_strokes.is_empty() || !d.selected_shapes.is_empty() || !d.selected_images.is_empty() || !d.selected_tables.is_empty() || !d.selected_texts.is_empty() {
-                    let mut app = app_state.borrow_mut();
-                    let note = app.current_note_mut();
-                    note.push_undo();
-                    
-                    // Collect selected indices, sort descending to remove safely
-                    let mut del_s: Vec<_> = d.selected_strokes.iter().copied().collect(); del_s.sort_unstable_by(|a,b| b.cmp(a));
-                    let mut del_sh: Vec<_> = d.selected_shapes.iter().copied().collect(); del_sh.sort_unstable_by(|a,b| b.cmp(a));
-                    let mut del_img: Vec<_> = d.selected_images.iter().copied().collect(); del_img.sort_unstable_by(|a,b| b.cmp(a));
-                    let mut del_tbl: Vec<_> = d.selected_tables.iter().copied().collect(); del_tbl.sort_unstable_by(|a,b| b.cmp(a));
-                    let mut del_txt: Vec<_> = d.selected_texts.iter().copied().collect(); del_txt.sort_unstable_by(|a,b| b.cmp(a));
-                    
-                    for i in del_s { note.strokes.remove(i); }
-                    for i in del_sh { note.shapes.remove(i); }
-                    for i in del_img { note.images.remove(i); }
-                    for i in del_tbl { note.tables.remove(i); }
-                    for i in del_txt { note.texts.remove(i); }
-                    
-                    d.selection_rect = None;
-                    d.selected_strokes.clear();
-                    d.selected_shapes.clear();
-                    d.selected_images.clear();
-                    d.selected_tables.clear();
-                    d.selected_texts.clear();
-                    
+
+                // Ctrl + Y (Redo)
+                if key == gtk::gdk::Key::y || key == gtk::gdk::Key::Y {
+                    state::Note::redo(app_state.borrow_mut().current_note_mut());
                     da.queue_draw();
                     return gtk::glib::Propagation::Stop;
+                }
+
+                // Ctrl + C (Copy)
+                if key == gtk::gdk::Key::c || key == gtk::gdk::Key::C {
+                    if !is_editing {
+                        let d = ds.borrow();
+                        if !d.selected_strokes.is_empty() || !d.selected_shapes.is_empty() || !d.selected_images.is_empty() || !d.selected_tables.is_empty() || !d.selected_texts.is_empty() {
+                            let mut app = app_state.borrow_mut();
+                            let note = app.current_note_mut();
+                            
+                            let mut clip = state::Note::default();
+                            for idx in &d.selected_strokes { if let Some(s) = note.strokes.get(*idx) { clip.strokes.push(s.clone()); } }
+                            for idx in &d.selected_shapes { if let Some(sh) = note.shapes.get(*idx) { clip.shapes.push(sh.clone()); } }
+                            for idx in &d.selected_images { if let Some(img) = note.images.get(*idx) { clip.images.push(img.clone()); } }
+                            for idx in &d.selected_tables { if let Some(tbl) = note.tables.get(*idx) { clip.tables.push(tbl.clone()); } }
+                            for idx in &d.selected_texts { if let Some(txt) = note.texts.get(*idx) { clip.texts.push(txt.clone()); } }
+                            
+                            app.clipboard_note = clip;
+                        }
+                        return gtk::glib::Propagation::Stop;
+                    }
+                }
+
+                // Ctrl + X (Cut)
+                if key == gtk::gdk::Key::x || key == gtk::gdk::Key::X {
+                    if !is_editing {
+                        let mut d = ds.borrow_mut();
+                        if !d.selected_strokes.is_empty() || !d.selected_shapes.is_empty() || !d.selected_images.is_empty() || !d.selected_tables.is_empty() || !d.selected_texts.is_empty() {
+                            let mut app = app_state.borrow_mut();
+                            let note = app.current_note_mut();
+                            note.push_undo();
+                            
+                            let mut clip = state::Note::default();
+                            
+                            let mut del_s: Vec<_> = d.selected_strokes.iter().copied().collect(); del_s.sort_unstable_by(|a,b| b.cmp(a));
+                            let mut del_sh: Vec<_> = d.selected_shapes.iter().copied().collect(); del_sh.sort_unstable_by(|a,b| b.cmp(a));
+                            let mut del_img: Vec<_> = d.selected_images.iter().copied().collect(); del_img.sort_unstable_by(|a,b| b.cmp(a));
+                            let mut del_tbl: Vec<_> = d.selected_tables.iter().copied().collect(); del_tbl.sort_unstable_by(|a,b| b.cmp(a));
+                            let mut del_txt: Vec<_> = d.selected_texts.iter().copied().collect(); del_txt.sort_unstable_by(|a,b| b.cmp(a));
+                            
+                            for i in del_s { clip.strokes.push(note.strokes.remove(i)); }
+                            for i in del_sh { clip.shapes.push(note.shapes.remove(i)); }
+                            for i in del_img { clip.images.push(note.images.remove(i)); }
+                            for i in del_tbl { clip.tables.push(note.tables.remove(i)); }
+                            for i in del_txt { clip.texts.push(note.texts.remove(i)); }
+                            
+                            app.clipboard_note = clip;
+                            
+                            d.selection_rect = None;
+                            d.selected_strokes.clear();
+                            d.selected_shapes.clear();
+                            d.selected_images.clear();
+                            d.selected_tables.clear();
+                            d.selected_texts.clear();
+                            
+                            da.queue_draw();
+                        }
+                        return gtk::glib::Propagation::Stop;
+                    }
+                }
+
+                // Ctrl + V (Paste)
+                if key == gtk::gdk::Key::v || key == gtk::gdk::Key::V {
+                    if !is_editing {
+                        let mut has_internal = false;
+                        {
+                            let mut app = app_state.borrow_mut();
+                            let clip = app.clipboard_note.clone();
+                            if !clip.strokes.is_empty() || !clip.shapes.is_empty() || !clip.images.is_empty() || !clip.tables.is_empty() || !clip.texts.is_empty() {
+                                let note = app.current_note_mut();
+                                note.push_undo();
+                                for mut s in clip.strokes { for p in &mut s.points { p.x += 20.0; p.y += 20.0; } note.strokes.push(s); }
+                                for mut sh in clip.shapes { sh.x1 += 20.0; sh.y1 += 20.0; sh.x2 += 20.0; sh.y2 += 20.0; note.shapes.push(sh); }
+                                for mut img in clip.images { img.x += 20.0; img.y += 20.0; note.images.push(img); }
+                                for mut tb in clip.tables { tb.x += 20.0; tb.y += 20.0; note.tables.push(tb); }
+                                for mut tx in clip.texts { tx.x += 20.0; tx.y += 20.0; note.texts.push(tx); }
+                                has_internal = true;
+                            }
+                        }
+                        if has_internal {
+                            let mut d = ds.borrow_mut();
+                            d.selection_rect = None;
+                            d.selected_strokes.clear();
+                            d.selected_shapes.clear();
+                            d.selected_images.clear();
+                            d.selected_tables.clear();
+                            d.selected_texts.clear();
+                            da.queue_draw();
+                            return gtk::glib::Propagation::Stop;
+                        }
+
+                        // Fallback to system image clipboard
+                        let clipboard = window_clone.clipboard();
+                        let as_c = app_state.clone();
+                        let da_c = da.clone();
+                        clipboard.read_texture_async(gtk::gio::Cancellable::NONE, move |result| {
+                            if let Ok(Some(texture)) = result {
+                                let tmp = "/tmp/sp_paste.png";
+                                if texture.save_to_png(tmp).is_ok() {
+                                    if let Ok(bytes) = std::fs::read(tmp) {
+                                        std::fs::remove_file(tmp).ok();
+                                        let mut app = as_c.borrow_mut();
+                                        let note = app.current_note_mut();
+                                        note.push_undo();
+                                        note.images.push(state::CanvasImage {
+                                            x: 20.0,
+                                            y: 20.0,
+                                            width: texture.width() as f64,
+                                            height: texture.height() as f64,
+                                            png_data: bytes,
+                                        });
+                                    }
+                                }
+                                da_c.queue_draw();
+                            }
+                        });
+                        return gtk::glib::Propagation::Stop;
+                    }
+                }
+
+                // Ctrl + S (Save) / Ctrl + Shift + S (Save As)
+                if key == gtk::gdk::Key::s || key == gtk::gdk::Key::S {
+                    let win = window_clone.clone();
+                    let as_ = app_state.clone();
+                    if has_shift {
+                        save_as_dialog(&as_, &win);
+                    } else {
+                        let path = as_.borrow().sessions[as_.borrow().current_session_idx].save_path.clone();
+                        match path {
+                            Some(p) => {
+                                do_save_session(&as_, &p);
+                                update_window_title(&win, &as_);
+                            }
+                            None => save_as_dialog(&as_, &win),
+                        }
+                    }
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                // Ctrl + O (Open Session)
+                if key == gtk::gdk::Key::o || key == gtk::gdk::Key::O {
+                    open_dialog(&app_state, &sidebar_list, &da, &window_clone);
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                // Ctrl + N (New Session)
+                if key == gtk::gdk::Key::n || key == gtk::gdk::Key::N {
+                    let idx = {
+                        let mut s = app_state.borrow_mut();
+                        let n = s.sessions.len() + 1;
+                        s.sessions.push(state::Session::new(format!("Session {n}")));
+                        s.sessions.len() - 1
+                    };
+                    app_state.borrow_mut().current_session_idx = idx;
+                    rebuild_sidebar(&sidebar_list, &app_state, &da, &window_clone);
+                    da.queue_draw();
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                // Ctrl + T (New Note)
+                if key == gtk::gdk::Key::t || key == gtk::gdk::Key::T {
+                    {
+                        let mut s = app_state.borrow_mut();
+                        let si = s.current_session_idx;
+                        let n = s.sessions[si].notes.len() + 1;
+                        s.sessions[si].notes.push(state::Note::new(format!("Note {n}")));
+                        let last = s.sessions[si].notes.len() - 1;
+                        s.sessions[si].current_note_idx = last;
+                    }
+                    rebuild_sidebar(&sidebar_list, &app_state, &da, &window_clone);
+                    da.queue_draw();
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                // Zoom shortcuts
+                let is_plus = key == gtk::gdk::Key::plus || key == gtk::gdk::Key::equal || key == gtk::gdk::Key::KP_Add;
+                let is_minus = key == gtk::gdk::Key::minus || key == gtk::gdk::Key::KP_Subtract;
+                let is_zero = key == gtk::gdk::Key::_0 || key == gtk::gdk::Key::KP_0;
+
+                if is_plus {
+                    let mut app = app_state.borrow_mut();
+                    app.zoom_level += 0.2;
+                    da.set_size_request((app.canvas_width * app.zoom_level) as i32, (app.canvas_height * app.zoom_level) as i32);
+                    da.queue_draw();
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                if is_minus {
+                    let mut app = app_state.borrow_mut();
+                    if app.zoom_level > 0.2 {
+                        app.zoom_level -= 0.2;
+                    }
+                    da.set_size_request((app.canvas_width * app.zoom_level) as i32, (app.canvas_height * app.zoom_level) as i32);
+                    da.queue_draw();
+                    return gtk::glib::Propagation::Stop;
+                }
+
+                if is_zero {
+                    let mut app = app_state.borrow_mut();
+                    app.zoom_level = 1.0;
+                    da.set_size_request((app.canvas_width * app.zoom_level) as i32, (app.canvas_height * app.zoom_level) as i32);
+                    da.queue_draw();
+                    return gtk::glib::Propagation::Stop;
+                }
+            } else {
+                // Delete or Backspace key
+                if key == gtk::gdk::Key::Delete || key == gtk::gdk::Key::BackSpace {
+                    let mut d = ds.borrow_mut();
+                    if !d.selected_strokes.is_empty() || !d.selected_shapes.is_empty() || !d.selected_images.is_empty() || !d.selected_tables.is_empty() || !d.selected_texts.is_empty() {
+                        let mut app = app_state.borrow_mut();
+                        let note = app.current_note_mut();
+                        note.push_undo();
+                        
+                        let mut del_s: Vec<_> = d.selected_strokes.iter().copied().collect(); del_s.sort_unstable_by(|a,b| b.cmp(a));
+                        let mut del_sh: Vec<_> = d.selected_shapes.iter().copied().collect(); del_sh.sort_unstable_by(|a,b| b.cmp(a));
+                        let mut del_img: Vec<_> = d.selected_images.iter().copied().collect(); del_img.sort_unstable_by(|a,b| b.cmp(a));
+                        let mut del_tbl: Vec<_> = d.selected_tables.iter().copied().collect(); del_tbl.sort_unstable_by(|a,b| b.cmp(a));
+                        let mut del_txt: Vec<_> = d.selected_texts.iter().copied().collect(); del_txt.sort_unstable_by(|a,b| b.cmp(a));
+                        
+                        for i in del_s { note.strokes.remove(i); }
+                        for i in del_sh { note.shapes.remove(i); }
+                        for i in del_img { note.images.remove(i); }
+                        for i in del_tbl { note.tables.remove(i); }
+                        for i in del_txt { note.texts.remove(i); }
+                        
+                        d.selection_rect = None;
+                        d.selected_strokes.clear();
+                        d.selected_shapes.clear();
+                        d.selected_images.clear();
+                        d.selected_tables.clear();
+                        d.selected_texts.clear();
+                        
+                        da.queue_draw();
+                        return gtk::glib::Propagation::Stop;
+                    }
+                }
+
+                // Tool selection shortcuts (when not editing text inputs)
+                if !is_editing {
+                    let tool_opt = if key == gtk::gdk::Key::p || key == gtk::gdk::Key::P {
+                        Some(Tool::Pen)
+                    } else if key == gtk::gdk::Key::e || key == gtk::gdk::Key::E {
+                        Some(Tool::Eraser)
+                    } else if key == gtk::gdk::Key::r || key == gtk::gdk::Key::R {
+                        Some(Tool::Spray)
+                    } else if key == gtk::gdk::Key::f || key == gtk::gdk::Key::F {
+                        Some(Tool::Fill)
+                    } else if key == gtk::gdk::Key::t || key == gtk::gdk::Key::T {
+                        Some(Tool::Text)
+                    } else if key == gtk::gdk::Key::s || key == gtk::gdk::Key::S || key == gtk::gdk::Key::v || key == gtk::gdk::Key::V {
+                        Some(Tool::Select)
+                    } else {
+                        None
+                    };
+
+                    if let Some(tool) = tool_opt {
+                        let btn_opt = {
+                            let d = ds.borrow();
+                            d.tool_buttons.get(&tool).cloned()
+                        };
+                        if let Some(btn) = btn_opt {
+                            btn.set_active(true);
+                            return gtk::glib::Propagation::Stop;
+                        }
+                    }
                 }
             }
             gtk::glib::Propagation::Proceed
@@ -288,6 +595,7 @@ fn setup_keyboard(window: &ApplicationWindow, app_state: &SharedApp, da: &Drawin
     });
     window.add_controller(ctrl);
 }
+
 
 // ── Toolbar ───────────────────────────────────────────────────────────────────
 
@@ -333,7 +641,10 @@ fn build_toolbar(
         save_btn.connect_clicked(move |_| {
             let path = as_.borrow().sessions[as_.borrow().current_session_idx].save_path.clone();
             match path {
-                Some(p) => do_save_session(&as_, &p),
+                Some(p) => {
+                    do_save_session(&as_, &p);
+                    update_window_title(&win, &as_);
+                }
                 None => save_as_dialog(&as_, &win),
             }
         });
@@ -473,6 +784,18 @@ fn build_toolbar(
         });
     }
     tools_group.append(&spray_btn);
+
+    // Populate tool buttons reference mapping for keyboard shortcuts
+    {
+        let mut ds = draw_state.borrow_mut();
+        ds.tool_buttons.insert(Tool::Select, select_btn.clone());
+        ds.tool_buttons.insert(Tool::Text, text_btn.clone());
+        ds.tool_buttons.insert(Tool::Fill, fill_btn.clone());
+        ds.tool_buttons.insert(Tool::Pen, pen_btn.clone());
+        ds.tool_buttons.insert(Tool::Eraser, eraser_btn.clone());
+        ds.tool_buttons.insert(Tool::Spray, spray_btn.clone());
+    }
+
     bar.append(&tools_group);
 
     // ── Group 3: Shapes ──
@@ -750,6 +1073,8 @@ fn rebuild_sidebar(
     da: &DrawingArea,
     window: &ApplicationWindow,
 ) {
+    update_window_title(window, app_state);
+
     while let Some(child) = sidebar.first_child() { sidebar.remove(&child); }
 
     let n_sessions = app_state.borrow().sessions.len();
@@ -1516,6 +1841,7 @@ fn save_as_dialog(app_state: &SharedApp, window: &ApplicationWindow) {
         dialog.set_current_name(&name);
     }
     let as_ = app_state.clone();
+    let win = window.clone();
     dialog.connect_response(move |d, resp| {
         if resp == gtk::ResponseType::Accept {
             if let Some(path) = d.file().and_then(|f| f.path()) {
@@ -1524,6 +1850,8 @@ fn save_as_dialog(app_state: &SharedApp, window: &ApplicationWindow) {
                 let mut app = as_.borrow_mut();
                 let si = app.current_session_idx;
                 app.sessions[si].save_path = Some(path_str);
+                drop(app);
+                update_window_title(&win, &as_);
             }
         }
         d.destroy();

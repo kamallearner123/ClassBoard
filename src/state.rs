@@ -24,7 +24,7 @@ impl Default for Color {
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Tool {
     #[default]
     Pen,
@@ -176,6 +176,17 @@ pub struct Note {
         Vec<CanvasText>,
         Vec<Spray>
     )>,
+    /// Redo stack — not persisted.
+    #[serde(skip)]
+    pub redo_stack: Vec<(
+        Option<Color>,
+        Vec<Stroke>,
+        Vec<Shape>,
+        Vec<CanvasImage>,
+        Vec<CanvasTable>,
+        Vec<CanvasText>,
+        Vec<Spray>
+    )>,
 }
 
 impl Note {
@@ -194,10 +205,45 @@ impl Note {
             self.sprays.clone(),
         ));
         if self.undo_stack.len() > 50 { self.undo_stack.remove(0); }
+        self.redo_stack.clear();
     }
 
     pub fn undo(&mut self) {
         if let Some((bg, s, sh, im, tb, tx, sp)) = self.undo_stack.pop() {
+            self.redo_stack.push((
+                self.bg_color.clone(),
+                self.strokes.clone(),
+                self.shapes.clone(),
+                self.images.clone(),
+                self.tables.clone(),
+                self.texts.clone(),
+                self.sprays.clone(),
+            ));
+            if self.redo_stack.len() > 50 { self.redo_stack.remove(0); }
+
+            self.bg_color = bg;
+            self.strokes = s;
+            self.shapes = sh;
+            self.images = im;
+            self.tables = tb;
+            self.texts = tx;
+            self.sprays = sp;
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some((bg, s, sh, im, tb, tx, sp)) = self.redo_stack.pop() {
+            self.undo_stack.push((
+                self.bg_color.clone(),
+                self.strokes.clone(),
+                self.shapes.clone(),
+                self.images.clone(),
+                self.tables.clone(),
+                self.texts.clone(),
+                self.sprays.clone(),
+            ));
+            if self.undo_stack.len() > 50 { self.undo_stack.remove(0); }
+
             self.bg_color = bg;
             self.strokes = s;
             self.shapes = sh;
