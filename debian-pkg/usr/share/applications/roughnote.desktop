@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=RoughNote
+Comment=A native Linux drawing and comprehensive note-taking application
+Exec=/usr/bin/roughnote
+Icon=roughnote
+Terminal=false
+Type=Application
+Categories=Graphics;Education;Utility;
+Keywords=note;drawing;paint;

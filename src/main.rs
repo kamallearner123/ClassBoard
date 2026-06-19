@@ -744,6 +744,16 @@ fn build_toolbar(
     }
     tools_group.append(&text_btn);
 
+    let sticky_btn = ToggleButton::builder().label("📝 Sticky").build();
+    sticky_btn.set_group(Some(&select_btn));
+    {
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
+        sticky_btn.connect_toggled(move |b| {
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Sticky; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("text")); da_.queue_draw(); }
+        });
+    }
+    tools_group.append(&sticky_btn);
+
     let fill_btn = ToggleButton::builder().label("🪣 Fill").build();
     fill_btn.set_group(Some(&select_btn));
     {
@@ -790,6 +800,7 @@ fn build_toolbar(
         let mut ds = draw_state.borrow_mut();
         ds.tool_buttons.insert(Tool::Select, select_btn.clone());
         ds.tool_buttons.insert(Tool::Text, text_btn.clone());
+        ds.tool_buttons.insert(Tool::Sticky, sticky_btn.clone());
         ds.tool_buttons.insert(Tool::Fill, fill_btn.clone());
         ds.tool_buttons.insert(Tool::Pen, pen_btn.clone());
         ds.tool_buttons.insert(Tool::Eraser, eraser_btn.clone());
@@ -965,6 +976,59 @@ fn build_toolbar(
         });
     }
     view_group.append(&zoom_out_btn);
+
+    // ── Background Rules ──
+    let bg_rules_btn = MenuButton::new();
+    bg_rules_btn.set_icon_name("format-justify-fill-symbolic");
+    bg_rules_btn.set_tooltip_text(Some("Background Rules"));
+    
+    let bg_popover = Popover::new();
+    let bg_box = GtkBox::new(Orientation::Vertical, 6);
+    bg_box.set_margin_top(6); bg_box.set_margin_bottom(6); bg_box.set_margin_start(6); bg_box.set_margin_end(6);
+    
+    let rules_enable_check = gtk::CheckButton::with_label("Enable Ruled Lines");
+    let rules_gap_spin = gtk::SpinButton::with_range(10.0, 100.0, 5.0);
+    rules_gap_spin.set_value(30.0);
+    
+    bg_box.append(&rules_enable_check);
+    
+    let gap_box = GtkBox::new(Orientation::Horizontal, 6);
+    gap_box.append(&Label::new(Some("Gap Size:")));
+    gap_box.append(&rules_gap_spin);
+    bg_box.append(&gap_box);
+    
+    bg_popover.set_child(Some(&bg_box));
+    bg_rules_btn.set_popover(Some(&bg_popover));
+    
+    {
+        let (as_, da_) = (app_state.clone(), da.clone());
+        let spin = rules_gap_spin.clone();
+        rules_enable_check.connect_toggled(move |c| {
+            let mut app = as_.borrow_mut();
+            let note = app.current_note_mut();
+            note.push_undo();
+            if c.is_active() {
+                note.rule_gap = Some(spin.value());
+            } else {
+                note.rule_gap = None;
+            }
+            da_.queue_draw();
+        });
+    }
+    
+    {
+        let (as_, da_) = (app_state.clone(), da.clone());
+        let check = rules_enable_check.clone();
+        rules_gap_spin.connect_value_changed(move |s| {
+            if check.is_active() {
+                let mut app = as_.borrow_mut();
+                let note = app.current_note_mut();
+                note.rule_gap = Some(s.value());
+                da_.queue_draw();
+            }
+        });
+    }
+    view_group.append(&bg_rules_btn);
 
     let cut_btn = Button::with_label("✂️ Cut");
     cut_btn.set_tooltip_text(Some("Cut selected items"));
@@ -1276,6 +1340,20 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
             if let Some(bg) = &note.bg_color {
                 cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
                 cr.paint().unwrap();
+            }
+            
+            if let Some(gap) = note.rule_gap {
+                cr.set_source_rgba(0.5, 0.5, 0.5, 0.2);
+                cr.set_line_width(1.0);
+                let mut y = gap;
+                let h = 100000.0;
+                let w = 100000.0;
+                while y < h {
+                    cr.move_to(0.0, y);
+                    cr.line_to(w, y);
+                    cr.stroke().unwrap();
+                    y += gap;
+                }
             }
             
             for img in &note.images { draw_canvas_image(cr, img); }
@@ -1593,8 +1671,8 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                         }
                     }
                     for (i, txt) in note.texts.iter().enumerate() {
-                        let mut w = 100.0; // Approximation if Cairo extents aren't immediately available
-                        let h = txt.font_size;
+                        let mut w = 100.0; // Approximation
+                        let mut h = txt.font_size;
                         if let Ok(surf) = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1) {
                             if let Ok(cr) = cairo::Context::new(&surf) {
                                 cr.select_font_face(&txt.font_family, cairo::FontSlant::Normal, cairo::FontWeight::Normal);
@@ -1602,12 +1680,30 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                                 if let Ok(extents) = cr.text_extents(&txt.text) {
                                     w = extents.width();
                                 }
+                                if let Ok(f_extents) = cr.font_extents() {
+                                    h = f_extents.height();
+                                }
                             }
                         }
-                        let t_max_x = txt.x + w; let t_max_y = txt.y + h;
-                        if !(t_max_x < rx || txt.x > rx+rw || t_max_y < ry || txt.y > ry+rh) {
+                        
+                        let mut t_min_x = txt.x;
+                        let mut t_min_y = txt.y;
+                        let mut t_max_x = txt.x + w;
+                        let mut t_max_y = txt.y + h;
+                        
+                        if txt.bg_color.is_some() {
+                            let pad = 12.0;
+                            w = w.max(100.0);
+                            h = h.max(50.0);
+                            t_min_x -= pad;
+                            t_min_y -= pad;
+                            t_max_x = txt.x + w + pad;
+                            t_max_y = txt.y + h + pad;
+                        }
+                        
+                        if !(t_max_x < rx || t_min_x > rx+rw || t_max_y < ry || t_min_y > ry+rh) {
                             d.selected_texts.insert(i);
-                            add_bounds(txt.x, txt.y, t_max_x, t_max_y);
+                            add_bounds(t_min_x, t_min_y, t_max_x, t_max_y);
                         }
                     }
 
@@ -1667,6 +1763,18 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                             let bg = note.bg_color.clone().unwrap_or(state::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
                             cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
                             cr.paint().unwrap();
+                            if let Some(gap) = note.rule_gap {
+                                cr.set_source_rgba(0.5, 0.5, 0.5, 0.2);
+                                cr.set_line_width(1.0);
+                                let mut y = gap;
+                                while y < h as f64 {
+                                    cr.move_to(0.0, y);
+                                    cr.line_to(w as f64, y);
+                                    cr.stroke().unwrap();
+                                    y += gap;
+                                }
+                            }
+                            cr.push_group();
                             for img in &note.images { draw_canvas_image(&cr, img); }
                             for txt in &note.texts { draw_canvas_text(&cr, txt); }
                             for s in &note.strokes { draw_stroke(&cr, s); }
@@ -1741,7 +1849,8 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                 }
                 da_.queue_draw();
                 return;
-            } else if tool == Tool::Text {
+            } else if tool == Tool::Text || tool == Tool::Sticky {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
                 // Spawn a Popover with a text entry
                 let pop = gtk::Popover::new();
                 pop.set_parent(&da_);
@@ -1768,6 +1877,24 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                 size_spin.set_value(24.0);
                 vbox.append(&size_spin);
                 
+                let sticky_hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                let sticky_check = gtk::CheckButton::with_label("Sticky Note");
+                sticky_check.set_active(tool == Tool::Sticky);
+                let sticky_color = gtk::ColorButton::new();
+                sticky_color.set_rgba(&gtk::gdk::RGBA::new(1.0, 0.9, 0.4, 1.0)); // Default yellow
+                sticky_color.set_sensitive(tool == Tool::Sticky);
+                
+                sticky_hbox.append(&sticky_check);
+                sticky_hbox.append(&sticky_color);
+                vbox.append(&sticky_hbox);
+                
+                {
+                    let cbtn = sticky_color.clone();
+                    sticky_check.connect_toggled(move |c| {
+                        cbtn.set_sensitive(c.is_active());
+                    });
+                }
+                
                 let insert_btn = gtk::Button::with_label("Insert Text");
                 vbox.append(&insert_btn);
                 
@@ -1778,17 +1905,27 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                 let as2 = as_.clone();
                 let da2 = da_.clone();
                 let pop_clone = pop.clone();
+                let check_clone = sticky_check.clone();
+                let color_clone = sticky_color.clone();
                 insert_btn.connect_clicked(move |_| {
                     let text = entry.text().to_string();
                     if !text.is_empty() {
                         let font_family = font_cb.active_text().unwrap_or("sans-serif".into()).to_string();
                         let font_size = size_spin.value();
+                        
+                        let bg_color = if check_clone.is_active() {
+                            let rgba = color_clone.rgba();
+                            Some(state::Color { r: rgba.red() as f64, g: rgba.green() as f64, b: rgba.blue() as f64, a: rgba.alpha() as f64 })
+                        } else {
+                            None
+                        };
+                        
                         let mut app = as2.borrow_mut();
                         let color = app.current_color.clone();
                         let note = app.current_note_mut();
                         note.push_undo();
                         note.texts.push(state::CanvasText {
-                            text, x: wx, y: wy, font_family, font_size, color
+                            text, x: wx, y: wy, font_family, font_size, color, bg_color
                         });
                         
                         // Check bounds and expand if needed
@@ -1816,6 +1953,29 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
 
     da.add_controller(drag);
     da.add_controller(click);
+    
+    let scroll_ctrl = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    {
+        let as_ = app_state.clone();
+        let da_ = da.clone();
+        scroll_ctrl.connect_scroll(move |ctrl, _dx, dy| {
+            let state = ctrl.current_event_state();
+            if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                let mut app = as_.borrow_mut();
+                if dy < 0.0 {
+                    app.zoom_level = (app.zoom_level * 1.1).min(5.0);
+                } else if dy > 0.0 {
+                    app.zoom_level = (app.zoom_level / 1.1).max(0.1);
+                }
+                da_.set_size_request((app.canvas_width * app.zoom_level) as i32, (app.canvas_height * app.zoom_level) as i32);
+                da_.queue_draw();
+                gtk::glib::Propagation::Stop
+            } else {
+                gtk::glib::Propagation::Proceed
+            }
+        });
+    }
+    da.add_controller(scroll_ctrl);
 }
 
 // ── Save / Open ───────────────────────────────────────────────────────────────
@@ -1898,13 +2058,26 @@ fn open_dialog(
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
-fn render_note(note: &state::Note, cr: &cairo::Context) {
+fn render_note(note: &state::Note, cr: &cairo::Context, w: f64, h: f64) {
     cr.set_antialias(cairo::Antialias::Best);
     
     let bg = note.bg_color.clone().unwrap_or(state::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
     cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
     cr.paint().unwrap();
+
+    if let Some(gap) = note.rule_gap {
+        cr.set_source_rgba(0.5, 0.5, 0.5, 0.2);
+        cr.set_line_width(1.0);
+        let mut y = gap;
+        while y < h {
+            cr.move_to(0.0, y);
+            cr.line_to(w, y);
+            cr.stroke().unwrap();
+            y += gap;
+        }
+    }
     
+    cr.push_group();
     for img in &note.images { draw_canvas_image(cr, img); }
     for txt in &note.texts { draw_canvas_text(cr, txt); }
     for s in &note.strokes { draw_stroke(cr, s); }
@@ -1943,7 +2116,7 @@ fn export_note_dialog(app_state: &SharedApp, window: &ApplicationWindow, format:
                     "png" => {
                         if let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, app_width as i32, app_height as i32) {
                             if let Ok(cr) = cairo::Context::new(&surface) {
-                                render_note(&note, &cr);
+                                render_note(&note, &cr, app_width, app_height);
                                 if let Ok(mut file) = std::fs::File::create(&path) {
                                     surface.write_to_png(&mut file).ok();
                                 }
@@ -1953,7 +2126,7 @@ fn export_note_dialog(app_state: &SharedApp, window: &ApplicationWindow, format:
                     "jpeg" => {
                         if let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, app_width as i32, app_height as i32) {
                             if let Ok(cr) = cairo::Context::new(&surface) {
-                                render_note(&note, &cr);
+                                render_note(&note, &cr, app_width, app_height);
                                 let mut buf = Vec::new();
                                 if surface.write_to_png(&mut buf).is_ok() {
                                     if let Ok(img) = image::load_from_memory(&buf) {
@@ -1967,7 +2140,7 @@ fn export_note_dialog(app_state: &SharedApp, window: &ApplicationWindow, format:
                         let path_str = path.to_string_lossy().into_owned();
                         if let Ok(surface) = cairo::PdfSurface::new(app_width, app_height, path_str) {
                             if let Ok(cr) = cairo::Context::new(&surface) {
-                                render_note(&note, &cr);
+                                render_note(&note, &cr, app_width, app_height);
                                 cr.show_page();
                                 surface.finish();
                             }
@@ -2008,8 +2181,8 @@ fn export_session_dialog(app_state: &SharedApp, window: &ApplicationWindow) {
                     let session = &app.sessions[app.current_session_idx];
                     for note in &session.notes {
                         if let Ok(cr) = cairo::Context::new(&surface) {
-                            render_note(note, &cr);
-                            cr.show_page();
+                            render_note(note, &cr, app_width, app_height);
+                            let _ = cr.show_page();
                         }
                     }
                     surface.finish();

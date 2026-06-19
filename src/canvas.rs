@@ -311,7 +311,6 @@ pub fn draw_canvas_image(cr: &Context, img: &CanvasImage) {
 
 pub fn draw_canvas_text(cr: &Context, txt: &crate::state::CanvasText) {
     cr.save().unwrap();
-    apply_color(cr, &txt.color);
     
     // Choose font generic family
     let slant = cairo::FontSlant::Normal;
@@ -319,8 +318,31 @@ pub fn draw_canvas_text(cr: &Context, txt: &crate::state::CanvasText) {
     cr.select_font_face(&txt.font_family, slant, weight);
     cr.set_font_size(txt.font_size);
     
-    // Cairo text starts drawing from the bottom-left baseline. We want x,y to be top-left.
     let extents = cr.font_extents().unwrap();
+    let text_extents = cr.text_extents(&txt.text).unwrap();
+
+    if let Some(bg) = &txt.bg_color {
+        let pad_x = 12.0;
+        let pad_y = 12.0;
+        let w = text_extents.width().max(100.0);
+        let h = extents.height().max(50.0);
+        
+        // Draw drop shadow
+        cr.save().unwrap();
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.2);
+        cr.rectangle(txt.x - pad_x + 3.0, txt.y - pad_y + 3.0, w + pad_x * 2.0, h + pad_y * 2.0);
+        cr.fill().unwrap();
+        cr.restore().unwrap();
+        
+        // Draw sticky background
+        cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
+        cr.rectangle(txt.x - pad_x, txt.y - pad_y, w + pad_x * 2.0, h + pad_y * 2.0);
+        cr.fill().unwrap();
+    }
+    
+    apply_color(cr, &txt.color);
+
+    // Cairo text starts drawing from the bottom-left baseline. We want x,y to be top-left.
     cr.move_to(txt.x, txt.y + extents.ascent());
     
     cr.show_text(&txt.text).unwrap();

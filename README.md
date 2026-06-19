@@ -67,22 +67,16 @@ You can build and install the application on Debian/Ubuntu in two ways:
    ```
 
 #### Option 2: Build as a Native `.deb` Package
-Using the pre-structured [debian-pkg](file:///home/robin/Projects/ClassBoard/debian-pkg) folder, you can build and install a `.deb` package:
-1. Build the release binary:
+We provide a helper script that automates compiling the binary and packaging it into a `.deb` file.
+
+1. Run the build script:
    ```bash
-   cargo build --release --locked
+   ./build_deb.sh
    ```
-2. Copy the compiled binary into the pre-structured directory:
-   ```bash
-   cp target/release/roughnote debian-pkg/usr/bin/
-   ```
-3. Generate the `.deb` package:
-   ```bash
-   dpkg-deb --build debian-pkg roughnote.deb
-   ```
-4. Install the package:
-   ```bash
-   sudo apt install ./roughnote.deb
+   *This will compile the release binary, structure the `debian-pkg` directory, and output the `.deb` file to the `target/debian/` directory.*
+
+2. Install the generated package using `apt` (which automatically handles dependencies):
+   sudo apt install ./target/debian/roughnote_0.1.0-1_amd64.deb
    ```
 
 ### Arch Linux

@@ -33,6 +33,7 @@ pub enum Tool {
     Spray,
     Select,
     Text,
+    Sticky,
     Line,
     Rectangle,
     Circle,
@@ -112,6 +113,8 @@ pub struct CanvasText {
     pub font_family: String,
     pub font_size: f64,
     pub color: Color,
+    #[serde(default)]
+    pub bg_color: Option<Color>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -159,6 +162,7 @@ impl CanvasTable {
 pub struct Note {
     pub name: String,
     pub bg_color: Option<Color>,
+    pub rule_gap: Option<f64>,
     pub strokes: Vec<Stroke>,
     pub shapes: Vec<Shape>,
     pub images: Vec<CanvasImage>,
@@ -169,6 +173,7 @@ pub struct Note {
     #[serde(skip)]
     pub undo_stack: Vec<(
         Option<Color>,
+        Option<f64>,
         Vec<Stroke>,
         Vec<Shape>,
         Vec<CanvasImage>,
@@ -180,6 +185,7 @@ pub struct Note {
     #[serde(skip)]
     pub redo_stack: Vec<(
         Option<Color>,
+        Option<f64>,
         Vec<Stroke>,
         Vec<Shape>,
         Vec<CanvasImage>,
@@ -197,6 +203,7 @@ impl Note {
     pub fn push_undo(&mut self) {
         self.undo_stack.push((
             self.bg_color.clone(),
+            self.rule_gap.clone(),
             self.strokes.clone(),
             self.shapes.clone(),
             self.images.clone(),
@@ -209,9 +216,10 @@ impl Note {
     }
 
     pub fn undo(&mut self) {
-        if let Some((bg, s, sh, im, tb, tx, sp)) = self.undo_stack.pop() {
+        if let Some((bg, gap, s, sh, im, tb, tx, sp)) = self.undo_stack.pop() {
             self.redo_stack.push((
                 self.bg_color.clone(),
+                self.rule_gap.clone(),
                 self.strokes.clone(),
                 self.shapes.clone(),
                 self.images.clone(),
@@ -222,6 +230,7 @@ impl Note {
             if self.redo_stack.len() > 50 { self.redo_stack.remove(0); }
 
             self.bg_color = bg;
+            self.rule_gap = gap;
             self.strokes = s;
             self.shapes = sh;
             self.images = im;
@@ -232,9 +241,10 @@ impl Note {
     }
 
     pub fn redo(&mut self) {
-        if let Some((bg, s, sh, im, tb, tx, sp)) = self.redo_stack.pop() {
+        if let Some((bg, gap, s, sh, im, tb, tx, sp)) = self.redo_stack.pop() {
             self.undo_stack.push((
                 self.bg_color.clone(),
+                self.rule_gap.clone(),
                 self.strokes.clone(),
                 self.shapes.clone(),
                 self.images.clone(),
@@ -245,6 +255,7 @@ impl Note {
             if self.undo_stack.len() > 50 { self.undo_stack.remove(0); }
 
             self.bg_color = bg;
+            self.rule_gap = gap;
             self.strokes = s;
             self.shapes = sh;
             self.images = im;
