@@ -49,6 +49,3 @@ The project includes a `build.sh` script to build binaries for both Linux and Wi
 ./build.sh
 ```
 *Note: Cross-compilation requires the appropriate C toolchains (like `mingw-w64` for Windows) and GTK4 development headers for the target architecture.*
-
-## License
-[Add your license here]
