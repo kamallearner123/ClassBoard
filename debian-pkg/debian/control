@@ -1,0 +1,16 @@
+Package: roughnote
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Depends: libgtk-4-1, libc6, libcairo2
+Maintainer: https://github.com/kamallearner123/ClassBoard
+Description: A native Linux drawing and note-taking application
+ A native Linux drawing and comprehensive note-taking application built
+ with Rust and GTK4.
+ .
+ To build and install from source on Debian/Ubuntu:
+   $ sudo apt update
+   $ sudo apt install -y cargo git libgtk-4-dev pkg-config
+   $ cargo build --release --locked
+   $ sudo install -Dm755 target/release/roughnote /usr/bin/roughnote

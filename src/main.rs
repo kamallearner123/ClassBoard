@@ -1763,18 +1763,6 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                             let bg = note.bg_color.clone().unwrap_or(state::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
                             cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
                             cr.paint().unwrap();
-                            if let Some(gap) = note.rule_gap {
-                                cr.set_source_rgba(0.5, 0.5, 0.5, 0.2);
-                                cr.set_line_width(1.0);
-                                let mut y = gap;
-                                while y < h as f64 {
-                                    cr.move_to(0.0, y);
-                                    cr.line_to(w as f64, y);
-                                    cr.stroke().unwrap();
-                                    y += gap;
-                                }
-                            }
-                            cr.push_group();
                             for img in &note.images { draw_canvas_image(&cr, img); }
                             for txt in &note.texts { draw_canvas_text(&cr, txt); }
                             for s in &note.strokes { draw_stroke(&cr, s); }
