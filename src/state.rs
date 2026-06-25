@@ -34,6 +34,7 @@ pub enum Tool {
     Select,
     Text,
     Sticky,
+    Highlighter,
     Line,
     Rectangle,
     Circle,
@@ -56,6 +57,8 @@ pub struct Stroke {
     pub points: Vec<Point>,
     pub color: Color,
     pub width: f64,
+    #[serde(default)]
+    pub is_highlighter: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -193,6 +196,8 @@ pub struct Note {
         Vec<CanvasText>,
         Vec<Spray>
     )>,
+    #[serde(skip)]
+    pub revision: u64,
 }
 
 impl Note {
@@ -201,6 +206,7 @@ impl Note {
     }
 
     pub fn push_undo(&mut self) {
+        self.revision += 1;
         self.undo_stack.push((
             self.bg_color.clone(),
             self.rule_gap.clone(),
@@ -216,6 +222,7 @@ impl Note {
     }
 
     pub fn undo(&mut self) {
+        self.revision += 1;
         if let Some((bg, gap, s, sh, im, tb, tx, sp)) = self.undo_stack.pop() {
             self.redo_stack.push((
                 self.bg_color.clone(),
@@ -241,6 +248,7 @@ impl Note {
     }
 
     pub fn redo(&mut self) {
+        self.revision += 1;
         if let Some((bg, gap, s, sh, im, tb, tx, sp)) = self.redo_stack.pop() {
             self.undo_stack.push((
                 self.bg_color.clone(),

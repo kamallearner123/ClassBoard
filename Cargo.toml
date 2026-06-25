@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gtk4 = "0.11.3"
+gtk4 = { version = "0.11.3", features = ["v4_6"] }
 cairo-rs = { version = "0.22.0", features = ["png", "pdf"] }
 image = "0.25"
 serde = { version = "1", features = ["derive"] }

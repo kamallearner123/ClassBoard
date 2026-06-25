@@ -5,26 +5,50 @@ pub fn apply_color(cr: &Context, c: &Color) {
     cr.set_source_rgba(c.r, c.g, c.b, c.a);
 }
 
-// ── Chaikin corner-cutting smoothing ─────────────────────────────────────────
-// Guaranteed smooth, never overshoots — unlike Catmull-Rom with dense points.
+// ── Midpoint Quadratic Bezier Smoothing ─────────────────────────────────────────
+// Generates perfectly smooth curves that never loop or overshoot (unlike Catmull-Rom)
+// and handles sparse points beautifully (unlike Chaikin).
 
-fn chaikin(pts: &[Point], iters: usize) -> Vec<Point> {
-    if pts.len() < 3 || iters == 0 {
-        return pts.to_vec();
+fn draw_smooth_curve(cr: &Context, pts: &[Point]) {
+    if pts.len() < 2 { return; }
+    if pts.len() == 2 {
+        cr.move_to(pts[0].x, pts[0].y);
+        cr.line_to(pts[1].x, pts[1].y);
+        return;
     }
-    let mut cur = pts.to_vec();
-    for _ in 0..iters {
-        let mut next = Vec::with_capacity(cur.len() * 2);
-        next.push(cur[0].clone()); // preserve start
-        for w in cur.windows(2) {
-            let (a, b) = (&w[0], &w[1]);
-            next.push(Point { x: 0.75 * a.x + 0.25 * b.x, y: 0.75 * a.y + 0.25 * b.y });
-            next.push(Point { x: 0.25 * a.x + 0.75 * b.x, y: 0.25 * a.y + 0.75 * b.y });
-        }
-        next.push(cur[cur.len() - 1].clone()); // preserve end
-        cur = next;
+
+    cr.move_to(pts[0].x, pts[0].y);
+    
+    // Draw line to the first midpoint
+    let mut p0_x = (pts[0].x + pts[1].x) / 2.0;
+    let mut p0_y = (pts[0].y + pts[1].y) / 2.0;
+    cr.line_to(p0_x, p0_y);
+
+    for i in 1..pts.len() - 1 {
+        let cp = &pts[i];
+        let next = &pts[i + 1];
+        
+        let p2_x = (cp.x + next.x) / 2.0;
+        let p2_y = (cp.y + next.y) / 2.0;
+
+        // Convert Quadratic Bezier (P0, CP, P2) to Cubic Bezier (P0, CP1, CP2, P2)
+        // CP1 = P0 + 2/3 * (CP - P0)
+        let cp1_x = p0_x + (2.0 / 3.0) * (cp.x - p0_x);
+        let cp1_y = p0_y + (2.0 / 3.0) * (cp.y - p0_y);
+        
+        // CP2 = P2 + 2/3 * (CP - P2)
+        let cp2_x = p2_x + (2.0 / 3.0) * (cp.x - p2_x);
+        let cp2_y = p2_y + (2.0 / 3.0) * (cp.y - p2_y);
+
+        cr.curve_to(cp1_x, cp1_y, cp2_x, cp2_y, p2_x, p2_y);
+        
+        p0_x = p2_x;
+        p0_y = p2_y;
     }
-    cur
+    
+    // Draw line to the final point
+    let last = &pts[pts.len() - 1];
+    cr.line_to(last.x, last.y);
 }
 
 // ── Stroke rendering ─────────────────────────────────────────────────────────
@@ -39,20 +63,25 @@ pub fn draw_stroke(cr: &Context, stroke: &Stroke) {
     cr.set_line_join(cairo::LineJoin::Round);
     cr.set_antialias(cairo::Antialias::Best);
 
+    if stroke.is_highlighter {
+        cr.set_operator(cairo::Operator::Multiply);
+    } else {
+        cr.set_operator(cairo::Operator::Over);
+    }
+
     if raw.len() == 1 {
         cr.arc(raw[0].x, raw[0].y, stroke.width / 2.0, 0.0, std::f64::consts::TAU);
         cr.fill().unwrap();
         return;
     }
 
-    // Apply Chaikin smoothing — 3 iterations gives very smooth curves
-    let pts = chaikin(raw, 3);
-
-    cr.move_to(pts[0].x, pts[0].y);
-    for p in pts.iter().skip(1) {
-        cr.line_to(p.x, p.y);
-    }
+    // Draw smooth curve using Catmull-Rom to Bezier
+    draw_smooth_curve(cr, raw);
     cr.stroke().unwrap();
+    
+    if stroke.is_highlighter {
+        cr.set_operator(cairo::Operator::Over);
+    }
 }
 
 // ── Shape rendering ───────────────────────────────────────────────────────────
@@ -319,13 +348,19 @@ pub fn draw_canvas_text(cr: &Context, txt: &crate::state::CanvasText) {
     cr.set_font_size(txt.font_size);
     
     let extents = cr.font_extents().unwrap();
-    let text_extents = cr.text_extents(&txt.text).unwrap();
+    let lines: Vec<&str> = txt.text.split('\n').collect();
+    let mut max_w: f64 = 0.0;
+    for line in &lines {
+        if let Ok(text_extents) = cr.text_extents(line) {
+            if text_extents.width() > max_w { max_w = text_extents.width(); }
+        }
+    }
 
     if let Some(bg) = &txt.bg_color {
         let pad_x = 12.0;
         let pad_y = 12.0;
-        let w = text_extents.width().max(100.0);
-        let h = extents.height().max(50.0);
+        let w = max_w.max(100.0);
+        let h = (extents.height() * lines.len().max(1) as f64).max(50.0);
         
         // Draw drop shadow
         cr.save().unwrap();
@@ -343,9 +378,17 @@ pub fn draw_canvas_text(cr: &Context, txt: &crate::state::CanvasText) {
     apply_color(cr, &txt.color);
 
     // Cairo text starts drawing from the bottom-left baseline. We want x,y to be top-left.
-    cr.move_to(txt.x, txt.y + extents.ascent());
+    let mut current_y = txt.y + extents.ascent();
+    let line_height = extents.height();
+
+    for line in lines {
+        if !line.is_empty() {
+            cr.move_to(txt.x, current_y);
+            let _ = cr.show_text(line);
+        }
+        current_y += line_height;
+    }
     
-    cr.show_text(&txt.text).unwrap();
     cr.restore().unwrap();
 }
 

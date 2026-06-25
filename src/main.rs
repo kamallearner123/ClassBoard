@@ -185,17 +185,23 @@ struct DrawState {
 
     // References to tool toggle buttons for keyboard shortcuts
     tool_buttons: HashMap<state::Tool, ToggleButton>,
+
+    // Render cache
+    cached_surface: Option<cairo::ImageSurface>,
+    cached_revision: u64,
+    cached_zoom: f64,
+    cached_canvas_width: f64,
+    cached_canvas_height: f64,
+    cached_session_idx: usize,
+    cached_note_idx: usize,
 }
 
 type SharedApp = Rc<RefCell<AppState>>;
 type SharedDraw = Rc<RefCell<DrawState>>;
 
 fn main() {
-    // We use the cairo renderer because GTK4's hardware acceleration (NGL/Vulkan) 
-    // introduces massive texture-upload latency for full-screen Cairo DrawingAreas.
-    unsafe {
-        std::env::set_var("GSK_RENDERER", "cairo");
-    }
+    // Hardware acceleration (NGL/GL) is enabled by default. 
+    // We use a cairo::ImageSurface cache to mitigate texture-upload latency.
     
     let app = Application::builder()
         .application_id("org.roughnote.roughnote")
@@ -230,7 +236,7 @@ fn build_ui(app: &Application) {
     let da = DrawingArea::new();
     da.set_hexpand(true);
     da.set_vexpand(true);
-    da.set_cursor_from_name(Some("crosshair"));
+    da.set_cursor_from_name(Some("default"));
 
     let sidebar_list = GtkBox::new(Orientation::Vertical, 2);
     sidebar_list.set_margin_top(6);
@@ -323,6 +329,71 @@ fn setup_keyboard(
                     state::Note::redo(app_state.borrow_mut().current_note_mut());
                     da.queue_draw();
                     return gtk::glib::Propagation::Stop;
+                }
+
+                // Ctrl + A (Select All)
+                if key == gtk::gdk::Key::a || key == gtk::gdk::Key::A {
+                    if !is_editing {
+                        let btn_opt = {
+                            let d = ds.borrow();
+                            d.tool_buttons.get(&Tool::Select).cloned()
+                        };
+                        if let Some(btn) = btn_opt {
+                            btn.set_active(true);
+                        }
+                        da.set_cursor_from_name(Some("default"));
+
+                        let app = app_state.borrow();
+                        let note = app.current_note();
+                        let mut d = ds.borrow_mut();
+
+                        d.selected_strokes.clear();
+                        d.selected_shapes.clear();
+                        d.selected_images.clear();
+                        d.selected_tables.clear();
+                        d.selected_texts.clear();
+                        
+                        let mut min_x = f64::MAX; let mut min_y = f64::MAX;
+                        let mut max_x = f64::MIN; let mut max_y = f64::MIN;
+                        let mut found_any = false;
+                        
+                        let mut add_bounds = |bx1: f64, by1: f64, bx2: f64, by2: f64| {
+                            min_x = min_x.min(bx1.min(bx2)); min_y = min_y.min(by1.min(by2));
+                            max_x = max_x.max(bx1.max(bx2)); max_y = max_y.max(by1.max(by2));
+                            found_any = true;
+                        };
+                        
+                        for (i, s) in note.strokes.iter().enumerate() {
+                            d.selected_strokes.insert(i);
+                            for p in &s.points { add_bounds(p.x, p.y, p.x, p.y); }
+                        }
+                        for (i, sh) in note.shapes.iter().enumerate() {
+                            d.selected_shapes.insert(i);
+                            add_bounds(sh.x1, sh.y1, sh.x2, sh.y2);
+                        }
+                        for (i, img) in note.images.iter().enumerate() {
+                            d.selected_images.insert(i);
+                            add_bounds(img.x, img.y, img.x + img.width, img.y + img.height);
+                        }
+                        for (i, tbl) in note.tables.iter().enumerate() {
+                            d.selected_tables.insert(i);
+                            add_bounds(tbl.x, tbl.y, tbl.x + (tbl.cols as f64 * tbl.cell_w), tbl.y + (tbl.rows as f64 * tbl.cell_h));
+                        }
+                        for (i, txt) in note.texts.iter().enumerate() {
+                            d.selected_texts.insert(i);
+                            add_bounds(txt.x, txt.y, txt.x + 200.0, txt.y + txt.font_size); 
+                        }
+                        
+                        if found_any {
+                            let pad = 6.0;
+                            d.selection_rect = Some((min_x - pad, min_y - pad, max_x - min_x + pad*2.0, max_y - min_y + pad*2.0));
+                        } else {
+                            d.selection_rect = None;
+                        }
+                        
+                        da.queue_draw();
+                        return gtk::glib::Propagation::Stop;
+                    }
                 }
 
                 // Ctrl + C (Copy)
@@ -564,6 +635,8 @@ fn setup_keyboard(
                 if !is_editing {
                     let tool_opt = if key == gtk::gdk::Key::p || key == gtk::gdk::Key::P {
                         Some(Tool::Pen)
+                    } else if key == gtk::gdk::Key::h || key == gtk::gdk::Key::H {
+                        Some(Tool::Highlighter)
                     } else if key == gtk::gdk::Key::e || key == gtk::gdk::Key::E {
                         Some(Tool::Eraser)
                     } else if key == gtk::gdk::Key::r || key == gtk::gdk::Key::R {
@@ -729,7 +802,7 @@ fn build_toolbar(
         let as_ = app_state.clone();
         let da_ = da.clone();
         select_btn.connect_toggled(move |b| {
-            if b.is_active() { as_.borrow_mut().current_tool = Tool::Select; da_.set_cursor_from_name(Some("default")); }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Select; set_tool_cursor(&Tool::Select, &da_); }
         });
     }
     tools_group.append(&select_btn);
@@ -739,7 +812,7 @@ fn build_toolbar(
     {
         let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         text_btn.connect_toggled(move |b| {
-            if b.is_active() { as_.borrow_mut().current_tool = Tool::Text; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("text")); da_.queue_draw(); }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Text; ds_.borrow_mut().selection_rect = None; set_tool_cursor(&Tool::Text, &da_); da_.queue_draw(); }
         });
     }
     tools_group.append(&text_btn);
@@ -749,7 +822,7 @@ fn build_toolbar(
     {
         let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         sticky_btn.connect_toggled(move |b| {
-            if b.is_active() { as_.borrow_mut().current_tool = Tool::Sticky; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("text")); da_.queue_draw(); }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Sticky; ds_.borrow_mut().selection_rect = None; set_tool_cursor(&Tool::Sticky, &da_); da_.queue_draw(); }
         });
     }
     tools_group.append(&sticky_btn);
@@ -759,7 +832,7 @@ fn build_toolbar(
     {
         let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         fill_btn.connect_toggled(move |b| {
-            if b.is_active() { as_.borrow_mut().current_tool = Tool::Fill; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("cell")); da_.queue_draw(); }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Fill; ds_.borrow_mut().selection_rect = None; set_tool_cursor(&Tool::Fill, &da_); da_.queue_draw(); }
         });
     }
     tools_group.append(&fill_btn);
@@ -770,17 +843,27 @@ fn build_toolbar(
     {
         let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         pen_btn.connect_toggled(move |b| {
-            if b.is_active() { as_.borrow_mut().current_tool = Tool::Pen; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("crosshair")); da_.queue_draw(); }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Pen; ds_.borrow_mut().selection_rect = None; set_tool_cursor(&Tool::Pen, &da_); da_.queue_draw(); }
         });
     }
     tools_group.append(&pen_btn);
+
+    let highlighter_btn = ToggleButton::builder().label("🖌️ Highlight").build();
+    highlighter_btn.set_group(Some(&pen_btn));
+    {
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
+        highlighter_btn.connect_toggled(move |b| {
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Highlighter; ds_.borrow_mut().selection_rect = None; set_tool_cursor(&Tool::Highlighter, &da_); da_.queue_draw(); }
+        });
+    }
+    tools_group.append(&highlighter_btn);
 
     let eraser_btn = ToggleButton::builder().label("🧹 Eraser").build();
     eraser_btn.set_group(Some(&pen_btn));
     {
         let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         eraser_btn.connect_toggled(move |b| {
-            if b.is_active() { as_.borrow_mut().current_tool = Tool::Eraser; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("crosshair")); da_.queue_draw(); }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Eraser; ds_.borrow_mut().selection_rect = None; set_tool_cursor(&Tool::Eraser, &da_); da_.queue_draw(); }
         });
     }
     tools_group.append(&eraser_btn);
@@ -790,7 +873,7 @@ fn build_toolbar(
     {
         let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
         spray_btn.connect_toggled(move |b| {
-            if b.is_active() { as_.borrow_mut().current_tool = Tool::Spray; ds_.borrow_mut().selection_rect = None; da_.set_cursor_from_name(Some("crosshair")); da_.queue_draw(); }
+            if b.is_active() { as_.borrow_mut().current_tool = Tool::Spray; ds_.borrow_mut().selection_rect = None; set_tool_cursor(&Tool::Spray, &da_); da_.queue_draw(); }
         });
     }
     tools_group.append(&spray_btn);
@@ -803,6 +886,7 @@ fn build_toolbar(
         ds.tool_buttons.insert(Tool::Sticky, sticky_btn.clone());
         ds.tool_buttons.insert(Tool::Fill, fill_btn.clone());
         ds.tool_buttons.insert(Tool::Pen, pen_btn.clone());
+        ds.tool_buttons.insert(Tool::Highlighter, highlighter_btn.clone());
         ds.tool_buttons.insert(Tool::Eraser, eraser_btn.clone());
         ds.tool_buttons.insert(Tool::Spray, spray_btn.clone());
     }
@@ -896,7 +980,7 @@ fn build_toolbar(
                         if b.is_active() {
                             as2.borrow_mut().current_tool = tc.clone();
                             ds2.borrow_mut().selection_rect = None;
-                            da2.set_cursor_from_name(Some("crosshair"));
+                            set_tool_cursor(&tc, &da2);
                             da2.queue_draw();
                         }
                     });
@@ -1023,6 +1107,7 @@ fn build_toolbar(
             if check.is_active() {
                 let mut app = as_.borrow_mut();
                 let note = app.current_note_mut();
+                note.revision += 1;
                 note.rule_gap = Some(s.value());
                 da_.queue_draw();
             }
@@ -1070,6 +1155,29 @@ fn build_toolbar(
         });
     }
     view_group.append(&cut_btn);
+
+    let copy_btn = Button::with_label("📄 Copy");
+    copy_btn.set_tooltip_text(Some("Copy selected items"));
+    {
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
+        copy_btn.connect_clicked(move |_| {
+            let d = ds_.borrow();
+            if !d.selected_strokes.is_empty() || !d.selected_shapes.is_empty() || !d.selected_images.is_empty() || !d.selected_tables.is_empty() || !d.selected_texts.is_empty() {
+                let mut app = as_.borrow_mut();
+                let note = app.current_note();
+                
+                let mut clip = state::Note::default();
+                for i in &d.selected_strokes { if let Some(s) = note.strokes.get(*i) { clip.strokes.push(s.clone()); } }
+                for i in &d.selected_shapes { if let Some(sh) = note.shapes.get(*i) { clip.shapes.push(sh.clone()); } }
+                for i in &d.selected_images { if let Some(img) = note.images.get(*i) { clip.images.push(img.clone()); } }
+                for i in &d.selected_tables { if let Some(tbl) = note.tables.get(*i) { clip.tables.push(tbl.clone()); } }
+                for i in &d.selected_texts { if let Some(txt) = note.texts.get(*i) { clip.texts.push(txt.clone()); } }
+                
+                app.clipboard_note = clip;
+            }
+        });
+    }
+    view_group.append(&copy_btn);
 
     let paste_btn = Button::with_label("📋 Paste");
     {
@@ -1124,6 +1232,42 @@ fn build_toolbar(
         });
     }
     view_group.append(&paste_btn);
+
+    let delete_btn = Button::with_label("🗑️ Delete");
+    delete_btn.set_tooltip_text(Some("Delete selected items"));
+    {
+        let (as_, ds_, da_) = (app_state.clone(), draw_state.clone(), da.clone());
+        delete_btn.connect_clicked(move |_| {
+            let mut d = ds_.borrow_mut();
+            if !d.selected_strokes.is_empty() || !d.selected_shapes.is_empty() || !d.selected_images.is_empty() || !d.selected_tables.is_empty() || !d.selected_texts.is_empty() {
+                let mut app = as_.borrow_mut();
+                let note = app.current_note_mut();
+                note.push_undo();
+                
+                let mut del_s: Vec<_> = d.selected_strokes.iter().copied().collect(); del_s.sort_unstable_by(|a,b| b.cmp(a));
+                let mut del_sh: Vec<_> = d.selected_shapes.iter().copied().collect(); del_sh.sort_unstable_by(|a,b| b.cmp(a));
+                let mut del_img: Vec<_> = d.selected_images.iter().copied().collect(); del_img.sort_unstable_by(|a,b| b.cmp(a));
+                let mut del_tbl: Vec<_> = d.selected_tables.iter().copied().collect(); del_tbl.sort_unstable_by(|a,b| b.cmp(a));
+                let mut del_txt: Vec<_> = d.selected_texts.iter().copied().collect(); del_txt.sort_unstable_by(|a,b| b.cmp(a));
+                
+                for i in del_s { note.strokes.remove(i); }
+                for i in del_sh { note.shapes.remove(i); }
+                for i in del_img { note.images.remove(i); }
+                for i in del_tbl { note.tables.remove(i); }
+                for i in del_txt { note.texts.remove(i); }
+                
+                d.selection_rect = None;
+                d.selected_strokes.clear();
+                d.selected_shapes.clear();
+                d.selected_images.clear();
+                d.selected_tables.clear();
+                d.selected_texts.clear();
+                
+                da_.queue_draw();
+            }
+        });
+    }
+    view_group.append(&delete_btn);
     bar.append(&view_group);
 
     bar
@@ -1327,50 +1471,97 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
     
     da.set_draw_func({
         let (as_, ds) = (app_state.clone(), draw_state.clone());
-        move |_, cr, _, _| {
-            cr.set_antialias(cairo::Antialias::Best);
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            cr.paint().unwrap();
-
-            let app = as_.borrow();
+        move |_, cr, width, height| {
+            let mut app = as_.borrow_mut();
             let zoom = app.zoom_level;
-            cr.scale(zoom, zoom);
+            let cw = app.canvas_width;
+            let ch = app.canvas_height;
+            let rev = app.current_note().revision;
+            let s_idx = app.current_session_idx;
+            let n_idx = app.current_session().current_note_idx;
+            drop(app);
+
+            let mut d = ds.borrow_mut();
             
-            let note = app.current_note();
-            if let Some(bg) = &note.bg_color {
-                cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
-                cr.paint().unwrap();
-            }
-            
-            if let Some(gap) = note.rule_gap {
-                cr.set_source_rgba(0.5, 0.5, 0.5, 0.2);
-                cr.set_line_width(1.0);
-                let mut y = gap;
-                let h = 100000.0;
-                let w = 100000.0;
-                while y < h {
-                    cr.move_to(0.0, y);
-                    cr.line_to(w, y);
-                    cr.stroke().unwrap();
-                    y += gap;
+            let needs_redraw = d.cached_surface.is_none() 
+                || d.cached_revision != rev 
+                || (d.cached_zoom - zoom).abs() > 0.001
+                || (d.cached_canvas_width - cw).abs() > 0.001
+                || (d.cached_canvas_height - ch).abs() > 0.001
+                || d.cached_session_idx != s_idx
+                || d.cached_note_idx != n_idx;
+
+            if needs_redraw {
+                let s_width = (cw * zoom).ceil() as i32;
+                let s_height = (ch * zoom).ceil() as i32;
+                
+                if let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, s_width, s_height) {
+                    if let Ok(cache_cr) = cairo::Context::new(&surface) {
+                        cache_cr.set_antialias(cairo::Antialias::Best);
+                        cache_cr.set_source_rgb(1.0, 1.0, 1.0);
+                        cache_cr.paint().unwrap();
+
+                        cache_cr.scale(zoom, zoom);
+                        
+                        let app = as_.borrow();
+                        let note = app.current_note();
+
+                        if let Some(bg) = &note.bg_color {
+                            cache_cr.set_source_rgba(bg.r, bg.g, bg.b, bg.a);
+                            cache_cr.paint().unwrap();
+                        }
+                        
+                        if let Some(gap) = note.rule_gap {
+                            cache_cr.set_source_rgba(0.5, 0.5, 0.5, 0.2);
+                            cache_cr.set_line_width(1.0);
+                            let mut y = gap;
+                            let limit = ch.max(100000.0);
+                            while y < limit {
+                                cache_cr.move_to(0.0, y);
+                                cache_cr.line_to(cw, y);
+                                cache_cr.stroke().unwrap();
+                                y += gap;
+                            }
+                        }
+                        
+                        for img in &note.images { draw_canvas_image(&cache_cr, img); }
+                        for txt in &note.texts { draw_canvas_text(&cache_cr, txt); }
+                        for s in &note.strokes { draw_stroke(&cache_cr, s); }
+                        for sp in &note.sprays { draw_spray(&cache_cr, sp); }
+                        for sh in &note.shapes { draw_shape(&cache_cr, sh); }
+                    }
+                    d.cached_surface = Some(surface);
+                    d.cached_revision = rev;
+                    d.cached_zoom = zoom;
+                    d.cached_canvas_width = cw;
+                    d.cached_canvas_height = ch;
+                    d.cached_session_idx = s_idx;
+                    d.cached_note_idx = n_idx;
                 }
             }
+
+            cr.set_antialias(cairo::Antialias::None);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().unwrap();
             
-            for img in &note.images { draw_canvas_image(cr, img); }
-            for txt in &note.texts { draw_canvas_text(cr, txt); }
-            for s in &note.strokes { draw_stroke(cr, s); }
-            for sp in &note.sprays { draw_spray(cr, sp); }
-            for sh in &note.shapes { draw_shape(cr, sh); }
+            if let Some(ref surface) = d.cached_surface {
+                cr.set_source_surface(surface, 0.0, 0.0).unwrap();
+                cr.paint().unwrap();
+            }
+
+            // Draw dynamic elements on top
+            cr.set_antialias(cairo::Antialias::Best);
+            cr.save().unwrap();
+            cr.scale(zoom, zoom);
             
-            let is_select = app.current_tool == Tool::Select;
-            drop(app);
-            
-            let d = ds.borrow();
             if let Some(ref s) = d.current_stroke { draw_stroke(cr, s); }
             if let Some(ref sp) = d.current_spray { draw_spray(cr, sp); }
             if let Some(ref sh) = d.preview_shape { draw_shape(cr, sh); }
             
-            // Draw selection box only if the tool is Select
+            let app = as_.borrow();
+            let is_select = app.current_tool == Tool::Select;
+            drop(app);
+            
             if is_select {
                 if let Some((rx, ry, rw, rh)) = d.selection_rect.or(d.preview_selection) {
                     cr.set_source_rgba(0.2, 0.5, 1.0, 1.0);
@@ -1385,6 +1576,8 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                     cr.fill().unwrap();
                 }
             }
+            
+            cr.restore().unwrap();
         }
     });
 
@@ -1408,6 +1601,13 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                 d.current_stroke = Some(Stroke {
                     points: vec![Point { x: sx, y: sy }],
                     color, width,
+                    is_highlighter: false,
+                });
+            } else if tool == Tool::Highlighter {
+                d.current_stroke = Some(Stroke {
+                    points: vec![Point { x: sx, y: sy }],
+                    color, width: width * 3.0,
+                    is_highlighter: true,
                 });
             } else if tool == Tool::Spray {
                 d.current_spray = Some(Spray {
@@ -1479,7 +1679,7 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
 
             let mut d = ds.borrow_mut();
             match tool {
-                Tool::Pen => {
+                Tool::Pen | Tool::Highlighter => {
                     if let Some(ref mut stroke) = d.current_stroke {
                         if let Some(last) = stroke.points.last() {
                             let dx = ex - last.x;
@@ -1637,16 +1837,56 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                         found_any = true;
                     };
 
-                    for (i, s) in note.strokes.iter().enumerate() {
-                        let mut intersects = false;
-                        let mut b_min_x = f64::MAX; let mut b_min_y = f64::MAX;
-                        let mut b_max_x = f64::MIN; let mut b_max_y = f64::MIN;
-                        for p in &s.points {
-                            b_min_x = b_min_x.min(p.x); b_min_y = b_min_y.min(p.y);
-                            b_max_x = b_max_x.max(p.x); b_max_y = b_max_y.max(p.y);
-                            if p.x >= rx && p.x <= rx+rw && p.y >= ry && p.y <= ry+rh { intersects = true; }
+                    let mut i = 0;
+                    while i < note.strokes.len() {
+                        let mut all_inside = true;
+                        let mut all_outside = true;
+                        for p in &note.strokes[i].points {
+                            let inside = p.x >= rx && p.x <= rx+rw && p.y >= ry && p.y <= ry+rh;
+                            if inside { all_outside = false; } else { all_inside = false; }
                         }
-                        if intersects { d.selected_strokes.insert(i); add_bounds(b_min_x, b_min_y, b_max_x, b_max_y); }
+                        
+                        if all_inside {
+                            d.selected_strokes.insert(i);
+                            let mut b_min_x = f64::MAX; let mut b_min_y = f64::MAX;
+                            let mut b_max_x = f64::MIN; let mut b_max_y = f64::MIN;
+                            for p in &note.strokes[i].points {
+                                b_min_x = b_min_x.min(p.x); b_min_y = b_min_y.min(p.y);
+                                b_max_x = b_max_x.max(p.x); b_max_y = b_max_y.max(p.y);
+                            }
+                            add_bounds(b_min_x, b_min_y, b_max_x, b_max_y);
+                            i += 1;
+                        } else if all_outside {
+                            i += 1;
+                        } else {
+                            // mixed! split stroke
+                            let s_orig = note.strokes.remove(i);
+                            let mut current_part = Vec::new();
+                            let mut was_inside = false;
+                            
+                            for (idx, p) in s_orig.points.iter().enumerate() {
+                                let inside = p.x >= rx && p.x <= rx+rw && p.y >= ry && p.y <= ry+rh;
+                                if idx == 0 { was_inside = inside; }
+                                
+                                if inside == was_inside {
+                                    current_part.push(p.clone());
+                                } else {
+                                    if !current_part.is_empty() {
+                                        let mut new_s = s_orig.clone();
+                                        new_s.points = current_part.clone();
+                                        note.strokes.push(new_s);
+                                    }
+                                    current_part.clear();
+                                    current_part.push(p.clone());
+                                    was_inside = inside;
+                                }
+                            }
+                            if !current_part.is_empty() {
+                                let mut new_s = s_orig.clone();
+                                new_s.points = current_part.clone();
+                                note.strokes.push(new_s);
+                            }
+                        }
                     }
                     for (i, sh) in note.shapes.iter().enumerate() {
                         let sh_min_x = sh.x1.min(sh.x2); let sh_min_y = sh.y1.min(sh.y2);
@@ -1676,12 +1916,18 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                         if let Ok(surf) = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1) {
                             if let Ok(cr) = cairo::Context::new(&surf) {
                                 cr.select_font_face(&txt.font_family, cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-                                cr.set_font_size(txt.font_size);
-                                if let Ok(extents) = cr.text_extents(&txt.text) {
-                                    w = extents.width();
-                                }
                                 if let Ok(f_extents) = cr.font_extents() {
                                     h = f_extents.height();
+                                    
+                                    let lines: Vec<&str> = txt.text.lines().collect();
+                                    let mut max_w: f64 = 0.0;
+                                    for line in &lines {
+                                        if let Ok(extents) = cr.text_extents(line) {
+                                            if extents.width() > max_w { max_w = extents.width(); }
+                                        }
+                                    }
+                                    w = max_w;
+                                    h *= lines.len().max(1) as f64;
                                 }
                             }
                         }
@@ -1851,8 +2097,17 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                 vbox.set_margin_top(8); vbox.set_margin_bottom(8);
                 vbox.set_margin_start(8); vbox.set_margin_end(8);
                 
-                let entry = gtk::Entry::builder().placeholder_text("Type text here...").build();
-                vbox.append(&entry);
+                let scrolled_window = gtk::ScrolledWindow::builder()
+                    .hscrollbar_policy(gtk::PolicyType::Automatic)
+                    .vscrollbar_policy(gtk::PolicyType::Automatic)
+                    .min_content_height(100)
+                    .min_content_width(200)
+                    .build();
+                let text_view = gtk::TextView::builder()
+                    .wrap_mode(gtk::WrapMode::WordChar)
+                    .build();
+                scrolled_window.set_child(Some(&text_view));
+                vbox.append(&scrolled_window);
                 
                 let font_cb = gtk::ComboBoxText::new();
                 font_cb.append_text("sans-serif");
@@ -1895,8 +2150,12 @@ fn setup_canvas(da: &DrawingArea, app_state: &SharedApp, draw_state: &SharedDraw
                 let pop_clone = pop.clone();
                 let check_clone = sticky_check.clone();
                 let color_clone = sticky_color.clone();
+                let text_view_clone = text_view.clone();
                 insert_btn.connect_clicked(move |_| {
-                    let text = entry.text().to_string();
+                    let buffer = text_view_clone.buffer();
+                    let start = buffer.start_iter();
+                    let end = buffer.end_iter();
+                    let text = buffer.text(&start, &end, false).to_string();
                     if !text.is_empty() {
                         let font_family = font_cb.active_text().unwrap_or("sans-serif".into()).to_string();
                         let font_size = size_spin.value();
@@ -2180,4 +2439,83 @@ fn export_session_dialog(app_state: &SharedApp, window: &ApplicationWindow) {
         d.destroy();
     });
     dialog.show();
+}
+
+fn set_tool_cursor(tool: &Tool, da: &DrawingArea) {
+    let (hx, hy) = match tool {
+        Tool::Pen => (16, 16),
+        Tool::Highlighter => (16, 16),
+        Tool::Eraser => (16, 16),
+        Tool::Spray => (16, 16),
+        Tool::Fill => (16, 16),
+        Tool::Text | Tool::Sticky => {
+            da.set_cursor_from_name(Some("text"));
+            return;
+        }
+        _ => {
+            da.set_cursor_from_name(Some("default"));
+            return;
+        }
+    };
+
+    if let Ok(mut surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, 32, 32) {
+        if let Ok(cr) = cairo::Context::new(&surface) {
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+            cr.paint().unwrap();
+            
+            let draw_shape = |cr: &cairo::Context| {
+                match tool {
+                    Tool::Pen => {
+                        cr.move_to(16.0, 4.0); cr.line_to(16.0, 28.0);
+                        cr.move_to(4.0, 16.0); cr.line_to(28.0, 16.0);
+                        cr.arc(16.0, 16.0, 2.0, 0.0, std::f64::consts::TAU);
+                    }
+                    Tool::Highlighter => {
+                        cr.arc(16.0, 16.0, 8.0, 0.0, std::f64::consts::TAU);
+                    }
+                    Tool::Eraser => {
+                        cr.rectangle(6.0, 6.0, 20.0, 20.0);
+                    }
+                    Tool::Spray => {
+                        cr.arc(16.0, 16.0, 12.0, 0.0, std::f64::consts::TAU);
+                        cr.move_to(16.0, 16.0); cr.arc(16.0, 16.0, 1.0, 0.0, std::f64::consts::TAU);
+                    }
+                    Tool::Fill => {
+                        cr.move_to(8.0, 12.0); cr.line_to(24.0, 12.0);
+                        cr.line_to(20.0, 26.0); cr.line_to(12.0, 26.0);
+                        cr.close_path();
+                        cr.move_to(16.0, 12.0); cr.arc(16.0, 12.0, 4.0, std::f64::consts::PI, std::f64::consts::TAU);
+                    }
+                    _ => {}
+                }
+            };
+            
+            // Draw a white outline for contrast
+            cr.set_line_width(3.0);
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.8);
+            draw_shape(&cr);
+            cr.stroke_preserve().unwrap();
+            
+            // Draw black center
+            cr.set_line_width(1.5);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 1.0);
+            cr.stroke().unwrap();
+        }
+        
+        let stride = surface.stride() as usize;
+        if let Ok(data) = surface.data() {
+            let bytes = gtk::glib::Bytes::from(&*data);
+            let texture = gtk::gdk::MemoryTexture::new(
+                32, 32, 
+                gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied,
+                &bytes,
+                stride
+            );
+            let fallback: Option<&gtk::gdk::Cursor> = None;
+            let cursor = gtk::gdk::Cursor::from_texture(&texture, hx, hy, fallback);
+            da.set_cursor(Some(&cursor));
+            return;
+        }
+    }
+    da.set_cursor_from_name(Some("default"));
 }
